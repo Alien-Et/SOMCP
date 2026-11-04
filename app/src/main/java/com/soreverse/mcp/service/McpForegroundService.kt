@@ -43,7 +43,6 @@ import android.widget.TextView
 import com.soreverse.mcp.MainActivity
 import com.soreverse.mcp.core.AppLog
 import com.soreverse.mcp.core.EngineProvider
-import com.soreverse.mcp.core.IntegrityGuard
 import com.soreverse.mcp.core.NetworkInspector
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.mcp.McpHttpServer
@@ -159,12 +158,7 @@ class McpForegroundService : Service() {
         // system to answer with RemoteServiceException
         // ("...did not then call Service.startForeground()").
         if (!enterForeground(settings)) return false
-        if (!IntegrityGuard.isTrusted(applicationContext)) {
-            AppLog.e("MCP service start blocked by integrity guard")
-            running = false
-            stopSelf()
-            return false
-        }
+        // 【魔改】不再做完整性校验
         val host = settings.bindHost
         updateWakeLock(settings.wakeLockEnabled)
         EngineProvider.restoreWorkDirectory(applicationContext)
@@ -632,10 +626,7 @@ class McpForegroundService : Service() {
         fun isRunning(): Boolean = running
 
         fun start(context: Context) {
-            if (!IntegrityGuard.isTrusted(context.applicationContext)) {
-                AppLog.e("MCP service start rejected before dispatch by integrity guard")
-                return
-            }
+            // 【魔改】不再做完整性校验
             val intent = Intent(context, McpForegroundService::class.java).setAction(ACTION_START)
             if (Build.VERSION.SDK_INT >=
                 26

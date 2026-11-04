@@ -58,9 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.soreverse.mcp.core.ApkMcpBridge
 import com.soreverse.mcp.core.AppLog
-import com.soreverse.mcp.core.CloudflareTunnelManager
 import com.soreverse.mcp.core.EngineProvider
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.service.McpForegroundService
@@ -69,9 +67,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 @Composable
-internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenApkBridge: () -> Unit, onOpenKeepAlive: () -> Unit, onOpenTunnel: () -> Unit) {
+internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () -> Unit) {
     val context = LocalContext.current
-    var treeUri by remember { mutableStateOf(settings.treeUri) }
     var port by remember { mutableStateOf(settings.port.toString()) }
     var running by remember { mutableStateOf(McpForegroundService.isRunning()) }
     var portStatus by remember { mutableStateOf(portStatusText(settings.port, running, t.zh)) }
@@ -85,67 +82,21 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenApkBridge: () 
     var apkToolNames by remember { mutableStateOf<List<String>>(emptyList()) }
     var showToolCatalog by remember { mutableStateOf(false) }
     var keepAliveReady by remember { mutableStateOf(isKeepAliveReady(context, settings)) }
-    val pickTree =
-        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
-            if (uri != null) {
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    )
-                }.onFailure { AppLog.w("Unable to persist directory permission: ${it.message}") }
-                settings.treeUri = uri
-                settings.useDefaultWorkDir = false
-                treeUri = uri
-                EngineProvider.get(context).setWorkDirectory(uri)
-            }
-        }
-
     LaunchedEffect(Unit) {
-        treeUri?.let { EngineProvider.get(context).setWorkDirectory(it) }
-        apkConnected = withContext(Dispatchers.IO) {
-            val bridge = activeBridge(context)
-            when {
-                settings.apkMcpConfigs.isNotEmpty() -> bridge.probe().online
-                settings.apkMcpAutoProbe -> bridge.autoDiscover(ApkMcpBridge.DEFAULT_PORT).online
-                else -> false
-            }
-        }
+        // 【魔改】APK MCP 桥接已移除
+        apkConnected = false
         while (true) {
             running = McpForegroundService.isRunning()
             val typedPort = port.toIntOrNull() ?: settings.port
             portStatus = portStatusText(typedPort, running && typedPort == settings.port, t.zh)
             val currentEndpoints = filteredEndpoints(context, settings, typedPort)
             if (currentEndpoints != endpoints) endpoints = currentEndpoints
-            val ts = activeServer(context)?.tunnel?.status
-            val url = ts?.publicUrl?.takeIf {
-                it.isNotBlank() &&
-                    ts.state == CloudflareTunnelManager.State.RUNNING
-            }
-            if (url != quickPublicUrl) quickPublicUrl = url
-            val liveBridge = activeServer(context)?.apkBridge
-            apkToolNames = liveBridge?.mergedTools()?.map { it.name }.orEmpty()
-            val anyOnline = liveBridge?.allPrefixes()?.isNotEmpty() == true
-            if (anyOnline) {
-                apkConnected = true
-            } else if (settings.apkMcpAutoProbe) {
-                apkConnected = withContext(Dispatchers.IO) {
-                    val bridge = activeBridge(context)
-                    val result = if (settings.apkMcpConfigs.isNotEmpty()) {
-                        bridge.probe()
-                    } else {
-                        bridge.autoDiscover(
-                            ApkMcpBridge.DEFAULT_PORT
-                        )
-                    }
-                    result.online
-                }
-            } else if (liveBridge != null || settings.apkMcpConfigs.isEmpty()) {
-                apkConnected = false
-            }
+            // 【魔改】隧道与桥接状态已移除
+            quickPublicUrl = null
+            apkToolNames = emptyList()
+            apkConnected = false
             keepAliveReady = isKeepAliveReady(context, settings)
-            delay(if (settings.apkMcpAutoProbe) 10_000 else 1_000)
+            delay(1_000)
         }
     }
     LaunchedEffect(t.zh, running, port) {
@@ -178,7 +129,6 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenApkBridge: () 
             return
         }
         settings.port = nextPort
-        settings.useDefaultWorkDir = treeUri == null
         runCatching { McpForegroundService.start(context) }
             .onSuccess {
                 running = true
@@ -200,8 +150,7 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenApkBridge: () 
         if (running) {
             McpForegroundService.stop(context)
             running = false
-        } else if (treeUri == null ||
-            (settings.apkMcpMergeTools && apkConnected != true) ||
+        } else if ((settings.apkMcpMergeTools && apkConnected != true) ||
             !keepAliveReady
         ) {
             showStartDiagnosis = true
@@ -223,8 +172,6 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenApkBridge: () 
     } else {
         url
     }
-    val workDirReady = treeUri != null
-    val publicUrl = quickPublicUrl?.let { secured("$it/mcp") }.orEmpty()
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(
             title = if (t.zh) "控制台" else "Console",
@@ -259,22 +206,6 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenApkBridge: () 
                 ReadinessStrip(
                     items = listOf(
                         ReadinessItem(
-                            label = if (t.zh) "目录" else "Directory",
-                            value = if (workDirReady) (if (t.zh) "已设置" else "Set") else (if (t.zh) "未设置" else "Not set"),
-                            ok = workDirReady,
-                            onClick = { setupPrompt = SetupTarget.Directory }
-                        ),
-                        ReadinessItem(
-                            label = "APK MCP",
-                            value = when (apkConnected) {
-                                true -> if (t.zh) "已连接" else "Online"
-                                false -> if (t.zh) "未连接" else "Offline"
-                                null -> if (t.zh) "检测中" else "Checking"
-                            },
-                            ok = apkConnected == true || !settings.apkMcpMergeTools,
-                            onClick = { setupPrompt = SetupTarget.ApkMcp }
-                        ),
-                        ReadinessItem(
                             label = if (t.zh) "保活" else "Keep-alive",
                             value = if (keepAliveReady) (if (t.zh) "已就绪" else "Ready") else (if (t.zh) "未就绪" else "Not ready"),
                             ok = keepAliveReady,
@@ -288,11 +219,8 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenApkBridge: () 
                     t = t,
                     loopback = secured(loopbackUrl),
                     lan = lanUrl,
-                    publicUrl = publicUrl,
                     onCopyLoopback = { copy(context, secured(loopbackUrl), t.copied) },
                     onCopyLan = { copy(context, secured(lanUrl), t.copied) },
-                    onCopyPublic = { copy(context, publicUrl, t.copied) },
-                    onOpenTunnel = onOpenTunnel,
                     compact = compact,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -325,21 +253,13 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenApkBridge: () 
             title = { Text(setupPromptTitle(target, t.zh)) },
             text = {
                 Text(
-                    setupPromptBody(
-                        target,
-                        t.zh,
-                        workDirReady,
-                        apkConnected == true,
-                        keepAliveReady
-                    )
+                    setupPromptBody(target, t.zh, keepAliveReady)
                 )
             },
             confirmButton = {
                 Button(onClick = {
                     setupPrompt = null
                     when (target) {
-                        SetupTarget.Directory -> launchSafTreePicker(context, t.zh, pickTree)
-                        SetupTarget.ApkMcp -> onOpenApkBridge()
                         SetupTarget.KeepAlive -> onOpenKeepAlive()
                     }
                 }) { Text(if (t.zh) "继续设置" else "Continue setup") }
@@ -357,18 +277,6 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenApkBridge: () 
             title = { Text(if (t.zh) "启动前诊断" else "Pre-start diagnosis") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    DiagnosisLine(
-                        if (t.zh) "目录" else "Directory",
-                        workDirReady,
-                        if (t.zh) "未设置时无法扫描和打开 SO" else "SO scan/open will be unavailable"
-                    )
-                    if (settings.apkMcpMergeTools) {
-                        DiagnosisLine(
-                            "APK MCP",
-                            apkConnected == true,
-                            if (t.zh) "未连接时无法使用 APK 协同工具" else "APK bridge tools will be unavailable"
-                        )
-                    }
                     DiagnosisLine(
                         if (t.zh) "保活" else "Keep-alive",
                         keepAliveReady,
@@ -557,11 +465,8 @@ private fun EndpointBoard(
     t: UiText,
     loopback: String,
     lan: String,
-    publicUrl: String,
     onCopyLoopback: () -> Unit,
     onCopyLan: () -> Unit,
-    onCopyPublic: () -> Unit,
-    onOpenTunnel: () -> Unit,
     compact: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -597,15 +502,6 @@ private fun EndpointBoard(
             value = lan.ifBlank { if (t.zh) "暂无可用局域网地址" else "No LAN address" },
             enabled = lan.isNotBlank(),
             onCopy = onCopyLan,
-            modifier = Modifier.weight(1f)
-        )
-        EndpointDivider()
-        EndpointCell(
-            label = if (t.zh) "公网隧道" else "Public",
-            value = publicUrl.ifBlank { if (t.zh) "未开启 · 轻点去设置" else "Off · tap to set up" },
-            enabled = publicUrl.isNotBlank(),
-            onCopy = onCopyPublic,
-            onUnavailableClick = onOpenTunnel,
             modifier = Modifier.weight(1f)
         )
     }
@@ -746,29 +642,10 @@ private fun DiagnosisLine(label: String, ok: Boolean, detail: String) {
     }
 }
 
-private fun setupPromptTitle(target: SetupTarget, zh: Boolean): String = when (target) {
-    SetupTarget.Directory -> if (zh) "工作目录状态" else "Work directory status"
-    SetupTarget.ApkMcp -> if (zh) "APK MCP 状态" else "APK MCP status"
-    SetupTarget.KeepAlive -> if (zh) "保活状态" else "Keep-alive status"
-}
+private fun setupPromptTitle(target: SetupTarget, zh: Boolean): String =
+    if (zh) "保活状态" else "Keep-alive status"
 
-private fun setupPromptBody(target: SetupTarget, zh: Boolean, dirReady: Boolean, apkReady: Boolean, keepAliveReady: Boolean): String = when (target) {
-    SetupTarget.Directory -> if (zh) {
-        if (dirReady) "目录已设置。是否重新选择用于扫描、打开和导出 SO 的目录？" else "目录尚未设置，SO 浏览器和读盘工具将不可用。是否继续设置？"
-    } else if (dirReady) {
-        "A directory is set. Choose a different SO workspace?"
-    } else {
-        "No directory is set. SO browser and disk tools will be unavailable. Continue setup?"
-    }
-
-    SetupTarget.ApkMcp -> if (zh) {
-        if (apkReady) "APK MCP 已连接。是否查看桥接地址、工具合并和探测设置？" else "APK MCP 尚未连接，MT 管理器协同工具不可用。是否继续设置？"
-    } else if (apkReady) {
-        "APK MCP is connected. Review bridge settings?"
-    } else {
-        "APK MCP is not connected. MT Manager bridge tools are unavailable. Continue setup?"
-    }
-
+private fun setupPromptBody(target: SetupTarget, zh: Boolean, keepAliveReady: Boolean): String = when (target) {
     SetupTarget.KeepAlive -> if (zh) {
         if (keepAliveReady) "保活已就绪。是否查看唤醒锁、电池优化和开机自启设置？" else "保活尚未就绪，服务在后台可能被系统中断。是否继续设置？"
     } else if (keepAliveReady) {

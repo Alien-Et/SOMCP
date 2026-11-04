@@ -7,6 +7,8 @@
 package com.soreverse.mcp.engine
 
 import com.soreverse.mcp.core.MemoryGuard
+import com.soreverse.mcp.core.RootShell
+import com.soreverse.mcp.core.SelfArtifactGuard
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.ok
 import com.soreverse.mcp.nativecore.NativeProbe
@@ -16,26 +18,14 @@ import org.json.JSONObject
 /** Loads APK bytes for the audit tools; returns the error envelope on any gate failure. */
 internal fun EngineRuntime.loadApkAuditInput(path: String): Pair<ByteArray, JSONObject?> {
     if (path.isBlank()) return ByteArray(0) to err("INVALID_ARGUMENT", "APK path is required", "path", path)
-    // Reject absolute paths and traversal segments before any filesystem or SAF
-    // access: the work-directory reader resolves by relative path only, and a
-    // canonical form keeps the allow-list check meaningful.
+    // 【魔改】路径白名单已废除：任意绝对路径都允许（root 可读 /data/data 等）。
+    // 仅保留 ".." 穿越检测（防止相对路径越界导致的意外行为）。
     val normalized = path.replace('\\', '/')
     val segments = normalized.split('/').filter { it.isNotEmpty() && it != "." }
-    val traversal = normalized.startsWith("/") ||
-        normalized.contains(":") ||
-        segments.any { it == ".." }
-    if (traversal) {
-        return ByteArray(0) to err("PATH_NOT_ALLOWED", "APK path must be relative and stay inside its root", "path", path)
+    if (segments.any { it == ".." }) {
+        return ByteArray(0) to err("PATH_NOT_ALLOWED", "APK path must not contain '..'", "path", path)
     }
     val local = File(path)
-    if (local.isFile && !isAllowedLocalInput(local)) {
-        return ByteArray(0) to err(
-            "PATH_NOT_ALLOWED",
-            "Local APK path must be inside the app's private/external files directory or the selected work directory",
-            "path",
-            path
-        )
-    }
     if (local.isFile && local.length() > ApkAnalyzer.MAX_INPUT_BYTES) {
         return ByteArray(0) to err(
             "APK_LIMIT_EXCEEDED",
@@ -49,18 +39,24 @@ internal fun EngineRuntime.loadApkAuditInput(path: String): Pair<ByteArray, JSON
             MemoryGuard.ensureAnalysisMemory(local.length(), "Analyzing APK ${local.name}")
             local.readBytes()
         } else {
-            val dir = workDir
-                ?: return ByteArray(0) to err(
-                    "WORK_DIRECTORY_NOT_SELECTED",
-                    "APK path is not a local file and no work directory is selected",
-                    "path",
-                    path
+            // 【魔改】本地文件不可读时，先用 root 直读
+            val rootBytes = RootShell.readBytes(path)
+            if (rootBytes != null) {
+                rootBytes
+            } else {
+                val dir = workDir
+                    ?: return ByteArray(0) to err(
+                        "WORK_DIRECTORY_NOT_SELECTED",
+                        "APK path is not a local file, root is unavailable and no work directory is selected",
+                        "path",
+                        path
+                    )
+                MemoryGuard.ensureAnalysisMemory(
+                    dir.fileSize(path) ?: ApkAnalyzer.MAX_INPUT_BYTES,
+                    "Analyzing APK $path"
                 )
-            MemoryGuard.ensureAnalysisMemory(
-                dir.fileSize(path) ?: ApkAnalyzer.MAX_INPUT_BYTES,
-                "Analyzing APK $path"
-            )
-            dir.readFile(path, ApkAnalyzer.MAX_INPUT_BYTES)
+                dir.readFile(path, ApkAnalyzer.MAX_INPUT_BYTES)
+            }
         }
     } catch (error: ApkAnalysisLimitException) {
         return ByteArray(0) to err("APK_LIMIT_EXCEEDED", error.message ?: "APK exceeds analysis limits", "path", path)
@@ -68,7 +64,10 @@ internal fun EngineRuntime.loadApkAuditInput(path: String): Pair<ByteArray, JSON
     if (bytes.size < 4 || bytes[0] != 0x50.toByte() || bytes[1] != 0x4b.toByte()) {
         return ByteArray(0) to err("APK_INVALID", "Input is not a ZIP/APK file", "path", path)
     }
-    if (isSelfApkBytes(bytes) || (local.isFile && NativeProbe.isOwnApk(local.absolutePath))) {
+    // 【魔改】ALLOW_SELF_ANALYSIS 放行时不拦
+    if (!SelfArtifactGuard.ALLOW_SELF_ANALYSIS &&
+        (isSelfApkBytes(bytes) || (local.isFile && NativeProbe.isOwnApk(local.absolutePath)))
+    ) {
         return ByteArray(0) to selfForbidden("apk:$path")
     }
     return bytes to null

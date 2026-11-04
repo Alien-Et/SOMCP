@@ -580,7 +580,8 @@ internal object ApkSigTools {
 
     private val KNOWN_ABIS = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 
-    fun abiCoverage(apk: ByteArray, maxParsedBytes: Int = 128 * 1024 * 1024): JSONObject {
+    // 【魔改】128 MiB → 2 GiB
+    fun abiCoverage(apk: ByteArray, maxParsedBytes: Int = 2 * 1024 * 1024 * 1024): JSONObject {
         val layout = parseZipLayout(apk)
             ?: return err("APK_INVALID", "not a ZIP: EOCD not found")
         val libs = layout.entries.filter { Regex("^lib/[^/]+/[^/]+\\.so$").matches(it.name) && !it.name.endsWith("/") }

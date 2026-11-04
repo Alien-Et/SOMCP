@@ -2540,9 +2540,9 @@ Java_com_soreverse_mcp_nativecore_NativeProbe_nativeVerifyBlock(
     MappedApk apk;
     const MapStatus ms = apk.map_status(path.c_str(), /*require_running=*/true);
     if (ms == kMapRedirected || ms == kMapNotRunningApk) {
-        LOGE("APK path substituted (anti-redirect status=%d): %s",
+        // 【魔改】原为 ::_exit(173) 硬杀进程；改为只记录，继续校验
+        LOGE("APK path substituted (anti-redirect status=%d): %s [MOD: ignored]",
              static_cast<int>(ms), path.c_str());
-        ::_exit(173);
     }
     if (ms != kMapOk) {
         LOGE("Failed to map APK for signature verification: %s", path.c_str());
@@ -2569,8 +2569,10 @@ Java_com_soreverse_mcp_nativecore_NativeProbe_nativeVerifyBlock(
                                        eocd.central_dir_offset, pinned, &fatal);
     wipe_string(pinned);
     if (fatal) {
-        LOGE("APK signature verification FAILED (code=0x%X): %s", code, path.c_str());
-        ::_exit(173);
+        // 【魔改】原为 ::_exit(173) 硬杀进程；改为只记录日志，返回失败但没有副作用
+        LOGE("APK signature verification FAILED (code=0x%X): %s [MOD: not killing]",
+             code, path.c_str());
+        return code;
     }
     if (code != kBlockOk) {
         LOGE("APK signature verification inconclusive (code=0x%X), not treated as tampering",

@@ -34,7 +34,6 @@ import com.soreverse.mcp.core.EndpointInfo
 import com.soreverse.mcp.core.EngineProvider
 import com.soreverse.mcp.core.NetworkInspector
 import com.soreverse.mcp.core.SettingsStore
-import com.soreverse.mcp.engine.WorkDirectory
 import com.soreverse.mcp.service.McpForegroundService
 import org.json.JSONArray
 import org.json.JSONObject
@@ -42,28 +41,11 @@ import org.json.JSONObject
 @Composable
 internal fun SettingsServiceConfigPage(t: UiText, settings: SettingsStore) {
     val context = LocalContext.current
-    var treeUri by remember { mutableStateOf(settings.treeUri) }
     var portText by remember { mutableStateOf(settings.port.toString()) }
     var bindHost by remember { mutableStateOf(settings.bindHost) }
     var authEnabled by remember { mutableStateOf(settings.authEnabled) }
     var accessToken by remember { mutableStateOf(settings.accessToken) }
     var refreshKey by remember { mutableStateOf(0) }
-    val pickTree =
-        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
-            if (uri != null) {
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    )
-                }.onFailure { AppLog.w("Unable to persist directory permission: ${it.message}") }
-                settings.treeUri = uri
-                settings.useDefaultWorkDir = false
-                treeUri = uri
-                EngineProvider.get(context).setWorkDirectory(uri)
-            }
-        }
     val endpoints =
         remember(settings.port, settings.bindHost, refreshKey) {
             filteredEndpoints(context, settings, settings.port)
@@ -76,15 +58,6 @@ internal fun SettingsServiceConfigPage(t: UiText, settings: SettingsStore) {
             ?: loopback
     val publicUrl = activeServer(context)?.tunnel?.status?.publicUrl?.takeIf { it.isNotBlank() }
     PageScroll {
-        GlassGroup(title = if (t.zh) "工作目录" else "Work directory") {
-            NavRow(
-                title = treeUri?.let(WorkDirectory::displayPath) ?: if (t.zh) "未设置" else "Not set",
-                subtitle = if (t.zh) "用于扫描、打开、修改与导出 SO" else "Used to scan, open, edit and export SO files",
-                icon = Icons.Default.FolderOpen,
-                trailing = if (t.zh) "选择" else "Choose",
-                onClick = { launchSafTreePicker(context, t.zh, pickTree) }
-            )
-        }
         GlassGroup(
             title = if (t.zh) "服务端口" else "Service port",
             footer = portStatusText(

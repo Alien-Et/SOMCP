@@ -22,6 +22,7 @@ import com.soreverse.mcp.BuildConfig
 import com.soreverse.mcp.core.AppLog
 import com.soreverse.mcp.core.InsufficientMemoryException
 import com.soreverse.mcp.core.MemoryGuard
+import com.soreverse.mcp.core.RootShell
 import com.soreverse.mcp.core.SelfArtifactGuard
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.err
@@ -34,6 +35,17 @@ import java.net.URL
 import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
+
+/**
+ * 【魔改】无工作目录时，root 扫描的候选根目录。
+ * 顺序即优先级；扫描深度见 listAvailableSos。
+ */
+internal val ROOT_SCAN_ROOTS = listOf(
+    "/data/local/tmp",
+    "/data/app",
+    "/storage/emulated/0",
+    "/sdcard"
+)
 
 internal fun EngineRuntime.setWorkDirectory(uri: Uri) {
     if (workDirUri == uri && workDir != null) return
@@ -49,10 +61,50 @@ internal fun EngineRuntime.setWorkDirectory(uri: Uri) {
 }
 
 internal fun EngineRuntime.listAvailableSos(prefix: String = "", limit: Int = 50, cursor: String = ""): JSONObject = guarded {
-    val dir = workDir ?: return@guarded err("SO_NOT_FOUND", "No work directory selected")
-    val currentSources = ensureSources(dir)
     val boundedLimit = limit.coerceIn(1, 500)
     val start = cursor.removePrefix("source:").toIntOrNull()?.coerceAtLeast(0) ?: 0
+
+    // 【魔改】没有工作目录时，用 root 扫描常见 SO 目录
+    val dir = workDir
+    if (dir == null) {
+        val roots = ROOT_SCAN_ROOTS
+        val all = mutableListOf<SoSource>()
+        for (root in roots) {
+            if (all.size >= 2000) break
+            RootShell.walkFiles(root, listOf(".so"), maxDepth = 6) { e ->
+                if (all.size < 2000) {
+                    all.add(SoSource(e.path, "root_fs", e.name, e.size, e.modified, null))
+                }
+            }
+        }
+        val filtered = all.filter {
+            prefix.isBlank() || it.path.startsWith(prefix) || it.name.startsWith(prefix)
+        }
+        val items = JSONArray()
+        filtered.asSequence().drop(start).take(boundedLimit).forEach { src ->
+            items.put(
+                JSONObject()
+                    .put("path", src.path)
+                    .put("filePath", src.path)
+                    .put("name", src.name)
+                    .put("size", src.size)
+                    .put("source", src.source)
+            )
+        }
+        val next = if (start + boundedLimit < filtered.size) "source:${start + boundedLimit}" else ""
+        return@guarded JSONObject()
+            .put("items", items)
+            .put("returnedCount", items.length())
+            .put("totalAvailableCount", filtered.size)
+            .put("nextCursor", next)
+            .put("rootMode", true)
+            .put(
+                "usage",
+                "root scan (no work directory). Roots: ${ROOT_SCAN_ROOTS.joinToString()}."
+            )
+    }
+
+    val currentSources = ensureSources(dir)
     val filtered = currentSources.filter {
         prefix.isBlank() ||
             it.path.startsWith(prefix) ||
@@ -230,14 +282,6 @@ internal fun EngineRuntime.open(path: String, temporary: Boolean): JSONObject = 
 internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSONObject = guarded {
     if (path.isBlank()) return@guarded err("INVALID_ARGUMENT", "APK path is required", "path", path)
     val local = File(path)
-    if (local.isFile && !isAllowedLocalInput(local)) {
-        return@guarded err(
-            "PATH_NOT_ALLOWED",
-            "Local APK path must be inside the app's private/external files directory or the selected work directory",
-            "path",
-            path
-        )
-    }
     if (local.isFile &&
         local.length() > ApkAnalyzer.MAX_INPUT_BYTES
     ) {
@@ -250,11 +294,11 @@ internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSON
     }
     val bytes = try {
         if (local.isFile) {
-            MemoryGuard.ensureAnalysisMemory(
-                local.length(),
-                "Analyzing APK ${local.name}"
-            )
-            local.readBytes()
+            // 【魔改】路径白名单已废除：普通文件直读，root 通道兜底
+            val read = local.readBytes().takeIf { it.isNotEmpty() }
+                ?: RootShell.readBytes(path)
+            if (read == null) throw java.io.IOException("Unable to read APK: $path")
+            read
         } else {
             val workDirForApk =
                 workDir
@@ -284,8 +328,9 @@ internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSON
     ) {
         return@guarded err("APK_INVALID", "Input is not a ZIP/APK file", "path", path)
     }
-    if (isSelfApkBytes(bytes) ||
-        (local.isFile && NativeProbe.isOwnApk(local.absolutePath))
+    // 【魔改】ALLOW_SELF_ANALYSIS 放行时不拦
+    if (!com.soreverse.mcp.core.SelfArtifactGuard.ALLOW_SELF_ANALYSIS &&
+        (isSelfApkBytes(bytes) || (local.isFile && NativeProbe.isOwnApk(local.absolutePath)))
     ) {
         return@guarded selfForbidden("apk:$path")
     }
@@ -391,7 +436,8 @@ internal fun EngineRuntime.openUrl(url: String, outputName: String = "", tempora
             }
         }.toByteArray()
     }
-    if (isSelfApkBytes(bytes)) {
+    // 【魔改】ALLOW_SELF_ANALYSIS 放行时不拦
+    if (!com.soreverse.mcp.core.SelfArtifactGuard.ALLOW_SELF_ANALYSIS && isSelfApkBytes(bytes)) {
         return@guarded selfForbidden("url:$url")
     }
     if (bytes.size < 4 ||
@@ -435,19 +481,9 @@ internal fun EngineRuntime.openUrl(url: String, outputName: String = "", tempora
  * smaller cap instead of crashing with an OutOfMemoryError.
  */
 internal fun EngineRuntime.soDownloadMaxBytes(): Long {
-    val heapMaxMiB = Runtime.getRuntime().maxMemory() / (1024L * 1024L)
-    // Parsing roughly halves the free heap headroom; use ~50% of max heap as a
-    // safety ceiling so a big library won't blow the process heap out.
-    val heapCapMiB = (heapMaxMiB * 5) / 10
-    val storageFreeMiB = workDir?.let { wd ->
-        runCatching {
-            val free = android.os.StatFs(wd.rootAbsolutePath()).availableBytes /
-                (1024L * 1024L)
-            (free - 16L).coerceAtLeast(0L) // keep headroom on disk for the file
-        }.getOrDefault(heapCapMiB)
-    } ?: heapCapMiB
-    val capMiB = minOf(heapCapMiB, storageFreeMiB).coerceIn(64L, 2048L)
-    return capMiB * 1024L * 1024L
+    // 【魔改】下载上限放开：不再按堆大小/磁盘余量收紧，固定 8 GiB 天花板。
+    // 真实的内存压力交给 JVM OOM + MemoryGuard(ENFORCE=false) 兜底。
+    return 8L * 1024L * 1024L * 1024L
 }
 
 /** True when [bytes] carries SOMCP's own package identifier (`BuildConfig.APPLICATION_ID`). */
@@ -572,27 +608,15 @@ internal fun EngineRuntime.openWorkspace(path: String, temporary: Boolean): Work
             it.startsWith("apk:")
     }
     val src = findSource(path) ?: (if (isApkEmbedded) null else resolveLocalSoSource(path)) ?: run {
-        val trimmed = path.trim()
-        // The work-directory boundary checks below do not apply to APK-embedded
-        // references — fall straight through to SO_NOT_FOUND with a hint.
-        val absolute = trimmed.startsWith("/")
-        val root = workDir?.rootAbsolutePath()
+        // 【魔改】路径限制已废除：任意绝对路径 + root 通道都可读。
+        // 只要 resolveLocalSoSource 判定为可读（含 root），就会在上面返回，
+        // 走不到这里说明文件确实不存在或不可读。
         if (isApkEmbedded) {
             error(
                 "SO path not found: $path. This looks like an APK-embedded SO; call so_open (action=list) first and open it with the returned path (apk:<relpath>!lib/<abi>/x.so)."
             )
         }
-        if (workDir == null && absolute) {
-            error(
-                "WORK_DIRECTORY_NOT_SELECTED: No work directory selected. Select the containing directory with the work-directory picker, then pass the path returned by so_open action=list or the same absolute path: $trimmed"
-            )
-        }
-        if (absolute && root != null && !trimmed.isSameOrChildOf(root)) {
-            error(
-                "PATH_OUTSIDE_WORK_DIRECTORY: '$trimmed' is outside the selected work directory root '$root'. Pick the containing directory or an ancestor with the work-directory picker."
-            )
-        }
-        error("SO path not found: $path")
+        error("SO path not found: $path (root available=${RootShell.isAvailable()})")
     }
     // Own-artifact protection: never open/view/modify SOMCP's own APK or the
     // native libraries it bundles, whether reached directly (local_file /
@@ -620,9 +644,14 @@ internal fun EngineRuntime.openWorkspace(path: String, temporary: Boolean): Work
         "Opening ${src.name} for analysis"
     )
     val original = when (src.source) {
-        "build_output", "local_file" -> runCatching {
+        // 【魔改】普通文件直读：不再需要工作目录
+        "build_output", "local_file", "local_fs" -> runCatching {
             File(src.path).readBytes()
         }.getOrElse { error("SO path not found: $path") }
+
+        // 【魔改】root 通道直读任意路径（/data/data、/data/local/tmp 等）
+        "root_fs" -> RootShell.readBytes(src.path)
+            ?: error("SO path not found via root: $path")
 
         else -> (
             workDir
@@ -634,7 +663,10 @@ internal fun EngineRuntime.openWorkspace(path: String, temporary: Boolean): Work
     // name this process can classify, and the work directory is read through
     // SAF documents rather than the filesystem. The bytes that are about to be
     // analyzed are therefore checked as well.
-    if (containsPackageIdentifier(original)) {
+    // 【魔改】ALLOW_SELF_ANALYSIS 放行时不拦
+    if (!com.soreverse.mcp.core.SelfArtifactGuard.ALLOW_SELF_ANALYSIS &&
+        containsPackageIdentifier(original)
+    ) {
         throw IllegalArgumentException(
             "SELF_ANALYSIS_FORBIDDEN: SOMCP cannot open, view, or modify its own artifact ${src.path}"
         )
@@ -766,27 +798,41 @@ internal fun EngineRuntime.prepareAnalysisInput(original: ByteArray): AnalysisIn
     return AnalysisInput(recovered, "xanso_recovered_sections", facts, after)
 }
 
-internal fun EngineRuntime.isAllowedLocalInput(file: File): Boolean {
-    val extDir = context.getExternalFilesDir(null)?.canonicalPath
-    val intDir = runCatching { context.filesDir.canonicalPath }.getOrNull()
-    val cacheDir = runCatching { context.cacheDir.canonicalPath }.getOrNull()
-    val canonical = runCatching { file.canonicalPath }.getOrNull() ?: return false
-    return listOfNotNull(extDir, intDir, cacheDir).any { canonical.startsWith(it) }
-}
-
 internal fun EngineRuntime.resolveLocalSoSource(rawPath: String): SoSource? {
     if (rawPath.isBlank()) return null
     val file = File(rawPath)
-    if (!file.exists() || !file.isFile) return null
+
+    // 【魔改】1) 普通文件直读：不再限制工作目录
+    if (file.exists() && file.isFile) {
+        val canonical = runCatching { file.canonicalPath }.getOrDefault(rawPath)
+        return SoSource(canonical, "local_fs", file.name, file.length(), file.lastModified(), null)
+    }
+
+    // 【魔改】2) root 通道：任意路径（含 /data/data、/data/local/tmp）
+    if (RootShell.isAvailable()) {
+        val trimmed = rawPath.trim()
+        if (trimmed.startsWith("/") || trimmed.startsWith("~")) {
+            val abs = if (trimmed.startsWith("~")) trimmed.replaceFirst("~", "/data/local/tmp") else trimmed
+            if (RootShell.exists(abs) && !RootShell.isDirectory(abs)) {
+                val size = RootShell.fileSize(abs) ?: 0L
+                if (abs.endsWith(".so", ignoreCase = true) || abs.contains("!") || size > 0) {
+                    val name = abs.substringAfterLast('/')
+                    return SoSource(abs, "root_fs", name, size, System.currentTimeMillis(), null)
+                }
+            }
+        }
+    }
+
+    // 【魔改】3) 原逻辑保留作为兜底：app 私有目录下的 .so
     val extDir = context.getExternalFilesDir(null)?.canonicalPath
     val intDir = context.filesDir.canonicalPath
     val canonical = runCatching { file.canonicalPath }.getOrDefault(rawPath)
-    if (listOfNotNull(extDir, intDir).none { canonical.startsWith(it) } ||
-        !file.name.endsWith(".so", ignoreCase = true)
+    if (listOfNotNull(extDir, intDir).any { canonical.startsWith(it) } &&
+        file.name.endsWith(".so", ignoreCase = true)
     ) {
-        return null
+        return SoSource(canonical, "build_output", file.name, file.length(), file.lastModified(), null)
     }
-    return SoSource(canonical, "build_output", file.name, file.length(), file.lastModified(), null)
+    return null
 }
 
 internal fun EngineRuntime.findSource(rawPath: String): SoSource? {

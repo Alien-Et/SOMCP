@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.soreverse.mcp.core.AppLog
-import com.soreverse.mcp.core.IntegrityGuard
 import com.soreverse.mcp.core.SettingsStore
 
 class BootReceiver : BroadcastReceiver() {
@@ -15,10 +14,7 @@ class BootReceiver : BroadcastReceiver() {
         ) {
             return
         }
-        if (!IntegrityGuard.isTrusted(context.applicationContext)) {
-            AppLog.e("Boot autostart blocked by integrity guard")
-            return
-        }
+        // 【魔改】不再做完整性校验
         val settings = SettingsStore(context)
         if (!settings.bootAutoStart) {
             AppLog.i("Boot completed: bootAutoStart is off, skipping autostart")

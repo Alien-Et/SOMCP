@@ -70,6 +70,13 @@ class SettingsStore(context: Context) {
             }
             prefs.edit().putBoolean("apkNpBridgeRemoved", true).apply()
         }
+        // 【本地魔改版】本地与局域网直连免 key：默认关闭 token 认证。
+        if (!prefs.getBoolean("lanNoAuthMigrated_v1", false)) {
+            prefs.edit()
+                .putBoolean("authEnabled", false)
+                .putBoolean("lanNoAuthMigrated_v1", true)
+                .apply()
+        }
         // The 1.0.12 emergency patch once carried a one-time "restore LAN defaults"
         // migration that force-wrote bindHost=0.0.0.0 + authEnabled=false, silently
         // disabling token auth for users who had it enabled. That write is gone for
@@ -123,9 +130,9 @@ class SettingsStore(context: Context) {
      *  the product's core use case), so an out-of-the-box install must never be
      *  reachable without a token. Users can still turn it off explicitly. */
     var authEnabled: Boolean
-        get() = prefs.getBoolean("authEnabled", true)
+        get() = prefs.getBoolean("authEnabled", false)
         set(value) {
-            val wasEnabled = prefs.getBoolean("authEnabled", true)
+            val wasEnabled = prefs.getBoolean("authEnabled", false)
             prefs.edit().putBoolean("authEnabled", value).apply()
             // Rotating on enable invalidates any accessToken that leaked while
             // authentication was still off (e.g. via older app_config reads).
@@ -421,8 +428,9 @@ class SettingsStore(context: Context) {
         set(value) = prefs.edit().putBoolean("adaptiveLeanTools", value).apply()
 
     var maxConcurrentTools: Int
-        get() = prefs.getInt("maxConcurrentTools", 1)
-        set(value) = prefs.edit().putInt("maxConcurrentTools", value.coerceIn(1, 16)).apply()
+        // 【魔改】并发默认 1 → 8，上限 16 → 32
+        get() = prefs.getInt("maxConcurrentTools", 8)
+        set(value) = prefs.edit().putInt("maxConcurrentTools", value.coerceIn(1, 32)).apply()
 
     var requestTimeoutMs: Int
         get() = prefs.getInt("requestTimeoutMs", 30000)

@@ -9,9 +9,22 @@ import org.json.JSONObject
 internal class ApkAnalysisLimitException(message: String) : IllegalArgumentException(message)
 
 internal object ApkAnalyzer {
-    const val MAX_INPUT_BYTES = 512L * 1024L * 1024L
+    /**
+     * 【魔改】APK 输入上限。
+     *
+     * 原值 512 MiB 改为 4 GiB（实质上等于不限制），配合 largeHeap 与 root 直读，
+     * 可以分析任意大包。
+     */
+    const val MAX_INPUT_BYTES = 4L * 1024L * 1024L * 1024L
 
-    data class Limits(val maxEntries: Int = 100_000, val maxParsedEntryBytes: Int = 128 * 1024 * 1024, val maxParsedTotalBytes: Long = 256L * 1024L * 1024L)
+    /**
+     * 【魔改】条目/解析上限同步放开。
+     */
+    data class Limits(
+        val maxEntries: Int = 1_000_000,
+        val maxParsedEntryBytes: Int = 1024 * 1024 * 1024,
+        val maxParsedTotalBytes: Long = 8L * 1024L * 1024L * 1024L
+    )
 
     fun analyze(bytes: ByteArray, path: String, entryLimit: Int, limits: Limits = Limits()): JSONObject {
         if (bytes.size.toLong() >

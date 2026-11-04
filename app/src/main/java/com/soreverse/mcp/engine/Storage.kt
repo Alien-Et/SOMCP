@@ -21,9 +21,14 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import com.soreverse.mcp.core.RootShell
 import com.soreverse.mcp.core.AppLog
+import com.soreverse.mcp.core.MemoryGuard
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.FileInputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.zip.ZipInputStream
@@ -166,20 +171,32 @@ class WorkDirectory(private val context: Context, private val treeUri: Uri) {
         cache.clear()
     }
 
-    fun readSource(source: SoSource): ByteArray = if (source.source == "apk") {
-        val heapBudget = (Runtime.getRuntime().maxMemory() / 8L).coerceIn(
-            8L * 1024L * 1024,
-            64L * 1024L * 1024
-        )
-        val declaredLimit = source.size.takeIf { it > 0 }?.plus(1L) ?: heapBudget
-        extractZipEntry(
-            source.treeDocumentUri ?: error("Missing APK document uri"),
-            source.apkEntry ?: error("Missing APK entry"),
-            minOf(declaredLimit, heapBudget)
-        )
-    } else {
+    fun readSource(source: SoSource): ByteArray {
+        if (source.source == "apk") {
+            // 【魔改】堆预算上限从 64 MiB 提到 512 MiB（配合 largeHeap）
+            val heapBudget = (Runtime.getRuntime().maxMemory() / 4L).coerceIn(
+                32L * 1024L * 1024,
+                512L * 1024L * 1024
+            )
+            val declaredLimit = source.size.takeIf { it > 0 }?.plus(1L) ?: heapBudget
+            return extractZipEntry(
+                source.treeDocumentUri ?: error("Missing APK document uri"),
+                source.apkEntry ?: error("Missing APK entry"),
+                minOf(declaredLimit, heapBudget)
+            )
+        }
+        // 【魔改】直读通道：root_fs / local_fs / 无 SAF URI 的普通路径
+        if (source.source == "root_fs" || source.source == "local_fs" || source.treeDocumentUri == null) {
+            val path = source.path
+            // 先试 root（可读 /data/data 等受限目录）
+            RootShell.readBytes(path)?.let { return it }
+            // 再试普通 File 读
+            val f = File(path)
+            if (f.exists() && f.isFile) return f.readBytes()
+            error("Cannot read ${source.name} at $path (root not available and file not readable)")
+        }
         val uri = source.treeDocumentUri ?: error("Missing document uri")
-        if (source.size >= LARGE_FILE_THRESHOLD) {
+        return if (source.size >= LARGE_FILE_THRESHOLD) {
             readBytesChannel(uri, source.size) ?: readBytes(uri)
         } else {
             readBytes(uri)
@@ -217,7 +234,8 @@ class WorkDirectory(private val context: Context, private val treeUri: Uri) {
      * Returns null if the URI doesn't support file descriptors.
      */
     private fun readBytesChannel(uri: Uri, size: Long): ByteArray? {
-        if (size > 256L * 1024L * 1024L) return null // cap at 256 MiB
+        // 【魔改】去掉 256 MiB 上限；实际内存由 JVM 决定
+        if (size <= 0L) return null
         return try {
             resolver.openFileDescriptor(uri, "r")?.use { pfd ->
                 FileInputStream(pfd.fileDescriptor).use { fis ->

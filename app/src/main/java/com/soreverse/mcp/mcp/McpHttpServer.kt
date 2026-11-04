@@ -113,17 +113,8 @@ class McpHttpServer(private val context: Context, private val port: Int, private
         ?: CloudflareTunnelManager(context, SettingsStore(context)).also { tunnelHolder = it }
     private var tunnelHolder: CloudflareTunnelManager? = null
 
-    fun ensureBridgeProbed() {
-        val s = SettingsStore(context)
-        if (!s.apkMcpAutoProbe) return
-        val configs = s.apkMcpConfigs
-        if (configs.isNotEmpty()) {
-            val st = apkBridge.state()
-            if (!st.online) Thread { apkBridge.probe() }.start()
-        } else {
-            Thread { apkBridge.autoDiscover(ApkMcpBridge.DEFAULT_PORT) }.start()
-        }
-    }
+    // 【魔改】APK MCP 桥接已移除
+    fun ensureBridgeProbed() { }
 
     fun start() {
         if (engine != null) return
@@ -199,12 +190,10 @@ class McpHttpServer(private val context: Context, private val port: Int, private
         AppLog.i(
             "Ktor MCP server listening on $host:$port/mcp (permits=${settings.maxConcurrentTools})"
         )
-        ensureBridgeProbed()
-        apkBridge.startHealthMonitor()
+        // 【魔改】桥接监控已移除
     }
 
     fun stop() {
-        apkBridge.stopHealthMonitor()
         engine?.stop(gracePeriodMillis = 400, timeoutMillis = 1_500)
         engine = null
         AppLog.i("Ktor MCP server stopped")
@@ -514,7 +503,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                     .put("advertised", advertisedCountOf(advertised, cat))
             )
         }
-        val apkPrefixes = apkBridge.allPrefixes().toSet()
+        val apkPrefixes = emptySet<String>()
         val apkBridged = (0 until advertised.length()).count {
             val name = advertised.getJSONObject(it).optString("name")
             apkPrefixes.any { name.startsWith(it) }
@@ -538,7 +527,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
 
     private fun advertisedCountOf(arr: JSONArray, category: String): Int {
         var count = 0
-        val apkPrefixes = apkBridge.allPrefixes()
+        val apkPrefixes = emptyList<String>()
         for (i in 0 until arr.length()) {
             val name = arr.getJSONObject(i).optString("name")
             if (ToolCatalog.categoryOf(name) == category ||
@@ -637,7 +626,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
             tunnelStatusHook = { ok(tunnel.snapshotJson()) },
             tunnelStatsHook = { reset ->
                 if (reset) tunnel.resetTunnelStats()
-                ok(tunnel.tunnelStats())
+                ok(tunnel.tunnelStats)
             },
             tunnelStartHook = tunnelStart@{ mode, port, token, publicUrl ->
                 // A tunnel publishes the MCP surface to the public internet.
@@ -693,14 +682,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
             },
             apkProbeHook = {
                 val st = apkBridge.probe()
-                ok(
-                    apkBridge.snapshotJson().put(
-                        "tools",
-                        JSONArray().apply {
-                            st.tools.forEach { put(it.name) }
-                        }
-                    )
-                )
+                ok(apkBridge.snapshotJson())
             },
             apkPingHook = {
                 apkBridge.ping()
@@ -710,24 +692,9 @@ class McpHttpServer(private val context: Context, private val port: Int, private
         val handler = ToolCatalog.byName[name]
         val payload = if (handler != null) {
             handler.handle(ctx, args)
-        } else if (apkBridge.isBridgedTool(name)) {
-            // Own-artifact protection also covers tools that were merged into
-            // tools/list from an external APK MCP server (e.g. MT Manager).
-            // Block any bridged call whose arguments reference SOMCP's own APK
-            // or its bundled native libraries (open, view, edit, build, ...).
-            val selfArg = SelfArtifactGuard.findSelfArg(context, args)
-            if (selfArg != null) {
-                SelfArtifactGuard.forbidden(
-                    selfArg,
-                    "SOMCP refuses to forward bridged APK tool '$name' that targets its own artifact"
-                )
-            } else {
-                bridgedCall(
-                    name,
-                    args
-                )
-            }
-        } else {
+        } else if (false) {
+            JSONObject().put("error", "APK MCP bridge removed")
+} else {
             JSONObject().put(
                 "ok",
                 false
@@ -771,17 +738,8 @@ class McpHttpServer(private val context: Context, private val port: Int, private
      * standard refusal and the workspace id is quarantined, which also refuses
      * every later call (read / xref / edit / build) that mentions it.
      */
-    private fun bridgedCall(name: String, args: JSONObject): JSONObject {
-        val forwarded = apkBridge.callTool(name, args)
-        val verdict = SelfArtifactGuard.ownArtifactFromBridgedResult(forwarded)
-        if (verdict == null) return forwarded
-        SelfArtifactGuard.quarantine(verdict.identifiers)
-        AppLog.w("Self-artifact protection: refused bridged $name on own artifact ${verdict.value}")
-        return SelfArtifactGuard.forbidden(
-            verdict.value,
-            "SOMCP refuses to forward bridged APK tool '$name' that targets its own artifact"
-        )
-    }
+    private fun bridgedCall(name: String, args: JSONObject): JSONObject =
+        JSONObject().put("error", "APK MCP bridge removed")
 
     private fun io.ktor.server.application.ApplicationCall.authorized(): Boolean {
         val settings = SettingsStore(context)
@@ -922,33 +880,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
             if (leanSet != null && name !in leanSet) return@forEach
             out.put(ToolCatalog.toolDescriptor(handler, includeCategory))
         }
-        if (settings.apkMcpMergeTools) {
-            val merged = apkBridge.mergedTools()
-            // If no cached tools, try probing
-            val toolsToShow = if (merged.isNotEmpty()) {
-                merged
-            } else if (settings.apkMcpAutoProbe) {
-                apkBridge.probe().let { apkBridge.mergedTools() }
-            } else {
-                emptyList()
-            }
-            toolsToShow.forEach { td ->
-                if (td.name in disabled) return@forEach
-                val schema =
-                    td.inputSchema
-                        ?: JSONObject().put("type", "object").put("properties", JSONObject())
-                val obj = JSONObject()
-                    .put("name", td.name)
-                    .put(
-                        "description",
-                        "[APK ONLY — NOT for SO/native files] ${td.description ?: td.title ?: "APK MCP tool"} Use so_open + analyze_* + edit_* for SO file tasks."
-                    )
-                    .put("inputSchema", schema)
-                if (includeCategory) obj.put("category", "apk-bridge")
-                if (td.outputSchema != null) obj.put("outputSchema", td.outputSchema)
-                out.put(obj)
-            }
-        }
+        // 【魔改】APK MCP 桥接已移除（不再合并外部工具）
         return out
     }
 
@@ -1124,23 +1056,8 @@ class McpHttpServer(private val context: Context, private val port: Int, private
             }
             catMap.put(cat, JSONObject().put("description", desc).put("tools", names))
         }
-        if (settings.apkMcpMergeTools && apkBridge.state().online) {
-            val apkNames = JSONArray()
-            apkBridge.mergedTools().forEach {
-                apkNames.put(
-                    JSONObject().put("name", it.name).put("cls", "apk").put("advertised", true)
-                )
-            }
-            catMap.put(
-                "apk-bridge",
-                JSONObject()
-                    .put(
-                        "description",
-                        "Bridged APK MCP tools (${bridgeLabel()}) — ONLY for APK-layer tasks, NOT for SO/native files"
-                    )
-                    .put("tools", apkNames)
-            )
-        }
+        // 【魔改】APK 桥接已移除
+
         return JSONObject()
             .put(
                 "usage",
@@ -1579,32 +1496,8 @@ class McpHttpServer(private val context: Context, private val port: Int, private
             ).put(JSONObject().put("name", e.meta.name).put("description", desc))
             matched++
         }
-        if (settings.apkMcpMergeTools &&
-            (category.isBlank() || category == "apk-bridge") &&
-            apkBridge.state().online
-        ) {
-            val qLower = q
-            apkBridge.mergedTools()
-                .filter {
-                    !hasQuery ||
-                        (it.name + "\n" + (it.description ?: "")).lowercase().contains(qLower)
-                }
-                .forEach { td ->
-                    if (!grouped.has("apk-bridge")) grouped.put("apk-bridge", JSONArray())
-                    grouped.getJSONArray(
-                        "apk-bridge"
-                    ).put(
-                        JSONObject().put(
-                            "name",
-                            td.name
-                        ).put(
-                            "description",
-                            "[APK ONLY] ${td.description ?: (td.title ?: "APK MCP tool")} — NOT for SO files; use so_open for SO tasks."
-                        )
-                    )
-                    matched++
-                }
-        }
+        // 【魔改】APK 桥接已移除
+
         val res = JSONObject()
             .put("categories", grouped)
             .put("totalCount", ToolCatalog.ALL.size)
@@ -1662,7 +1555,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
         val full = tools()
         if (full.length() <= ToolCatalog.ALL.size + 64) return full
         val out = JSONArray()
-        val apkPrefixes = apkBridge.allPrefixes()
+        val apkPrefixes = emptyList<String>()
         for (i in 0 until full.length()) {
             val t = full.getJSONObject(i)
             val name = t.optString("name")

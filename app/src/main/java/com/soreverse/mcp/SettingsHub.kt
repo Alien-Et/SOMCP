@@ -56,8 +56,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.soreverse.mcp.core.GitHubRelease
-import com.soreverse.mcp.core.GitHubUpdateManager
 import com.soreverse.mcp.core.SettingsStore
 
 private fun settingsTitle(t: UiText, dest: SettingsDest): String = when (dest) {
@@ -70,18 +68,9 @@ private fun settingsTitle(t: UiText, dest: SettingsDest): String = when (dest) {
     SettingsDest.Export -> if (t.zh) "导出" else "Export"
     SettingsDest.Audit -> if (t.zh) "编辑校验与审计" else "Edit & Audit"
     SettingsDest.Blutter -> "Blutter"
-    SettingsDest.Tunnel -> if (t.zh) "Cloudflare 隧道" else "Cloudflare Tunnel"
-    SettingsDest.ApkBridge -> if (t.zh) "APK MCP 桥接" else "APK MCP Bridge"
-    SettingsDest.AiDeep -> if (t.zh) "AI 深度分析" else "AI Deep Analysis"
-    SettingsDest.Updates -> if (t.zh) "版本更新" else "Software Update"
     SettingsDest.Probe -> t.externalProbe
     SettingsDest.ToolStats -> if (t.zh) "工具调用审计" else "Tool Call Audit"
-    SettingsDest.TunnelStats -> if (t.zh) "隧道稳定性" else "Tunnel Stability"
-    SettingsDest.Instructions -> t.instructions
-    SettingsDest.Credits -> if (t.zh) "开源致谢" else "Credits"
-    SettingsDest.DevelopmentCredits -> if (t.zh) "开发致谢" else "Development credits"
     SettingsDest.Disclaimer -> t.disclaimer
-    SettingsDest.About -> t.about
     SettingsDest.BackupRestore -> t.backupRestore
 }
 
@@ -131,9 +120,6 @@ internal fun SettingsHub(
     backProgress: Float,
     t: UiText,
     settings: SettingsStore,
-    updateManager: GitHubUpdateManager,
-    availableRelease: GitHubRelease?,
-    onRelease: (GitHubRelease?) -> Unit,
     language: String,
     onLanguage: (String) -> Unit,
     themeMode: String,
@@ -197,16 +183,6 @@ internal fun SettingsHub(
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SettingsTile(
-                        if (t.zh) "AI 深度分析" else "AI Deep",
-                        if (t.zh) "端点 / Key / 模型" else "Endpoint / key / model",
-                        Icons.Default.Memory,
-                        AppPalette.indigo,
-                        {
-                            onDest(SettingsDest.AiDeep)
-                        },
-                        Modifier.weight(1f)
-                    )
-                    SettingsTile(
                         if (t.zh) "保活" else "Keep-alive",
                         if (t.zh) "唤醒锁 / 自启" else "Wake lock / boot",
                         Icons.Default.PowerSettingsNew,
@@ -216,94 +192,6 @@ internal fun SettingsHub(
                         },
                         Modifier.weight(1f)
                     )
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SettingsTile("APK MCP", if (t.zh) "MT 管理器协同" else "MT Manager bridge", Icons.Default.Link, AppPalette.orange, {
-                        onDest(SettingsDest.ApkBridge)
-                    }, Modifier.weight(1f))
-                    SettingsTile(if (t.zh) "隧道" else "Tunnel", if (t.zh) "公网暴露 / 保活" else "Public expose", Icons.Default.Cloud, AppPalette.purple, {
-                        onDest(SettingsDest.Tunnel)
-                    }, Modifier.weight(1f))
-                }
-                Text(
-                    if (t.zh) "引擎" else "Engine",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-                SurfacePanel {
-                    NavRow(if (t.zh) "返回数量" else "Result limits", "limit / disasm / hexdump", Icons.Default.Analytics, onClick = {
-                        onDest(SettingsDest.Limits)
-                    })
-                    GroupDivider()
-                    NavRow(if (t.zh) "导出" else "Export", if (t.zh) "冲突策略与构建镜像" else "Conflict strategy", Icons.Default.Storage, onClick = {
-                        onDest(SettingsDest.Export)
-                    })
-                    GroupDivider()
-                    NavRow(if (t.zh) "编辑校验与审计" else "Edit & Audit", if (t.zh) "快照 / 并发 / 模拟" else "Snapshot / concurrency", Icons.Default.Security, onClick = {
-                        onDest(SettingsDest.Audit)
-                    })
-                    GroupDivider()
-                    NavRow(
-                        "Blutter",
-                        if (t.zh) "Flutter 3.44 / Dart 3.12.2 / 完全离线" else "Flutter 3.44 / Dart 3.12.2 / fully offline",
-                        Icons.Default.Memory,
-                        onClick = {
-                            onDest(SettingsDest.Blutter)
-                        }
-                    )
-                }
-
-                Text(
-                    if (t.zh) "诊断与关于" else "Diagnostics & about",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-                SurfacePanel {
-                    NavRow(
-                        if (t.zh) "版本更新" else "Software update",
-                        if (t.zh) "GitHub Releases / 自动检查" else "GitHub Releases / automatic checks",
-                        Icons.Default.Info,
-                        trailing = availableRelease?.tag.orEmpty(),
-                        onClick = {
-                            onDest(SettingsDest.Updates)
-                        }
-                    )
-                    GroupDivider()
-                    NavRow(t.backupRestore, t.backupRestoreSubtitle, Icons.Default.Cloud, onClick = {
-                        onDest(SettingsDest.BackupRestore)
-                    })
-                    GroupDivider()
-                    NavRow(if (t.zh) "工具调用审计" else "Tool audit", if (t.zh) "调用统计与失败率" else "Stats and failures", Icons.Default.Analytics, onClick = {
-                        onDest(SettingsDest.ToolStats)
-                    })
-                    GroupDivider()
-                    NavRow(if (t.zh) "隧道稳定性" else "Tunnel stability", if (t.zh) "重启与探查" else "Restart and probe", Icons.Default.Cloud, onClick = {
-                        onDest(SettingsDest.TunnelStats)
-                    })
-                    GroupDivider()
-                    NavRow(t.instructions, if (t.zh) "推荐工作流" else "Workflow", Icons.Default.Description, onClick = {
-                        onDest(SettingsDest.Instructions)
-                    })
-                    GroupDivider()
-                    NavRow(if (t.zh) "开源致谢" else "Credits", if (t.zh) "依赖与参考" else "Dependencies", Icons.Default.Build, onClick = {
-                        onDest(SettingsDest.Credits)
-                    })
-                    GroupDivider()
-                    NavRow(if (t.zh) "开发致谢" else "Development credits", if (t.zh) "贡献者与维护者" else "Contributors", Icons.Default.Person, onClick = {
-                        onDest(SettingsDest.DevelopmentCredits)
-                    })
-                    GroupDivider()
-                    NavRow(t.disclaimer, icon = Icons.Default.Info, onClick = {
-                        onDest(SettingsDest.Disclaimer)
-                    })
-                    GroupDivider()
-                    NavRow(t.about, icon = Icons.Default.Info, onClick = {
-                        onDest(SettingsDest.About)
-                    })
                 }
                 // License footer
                 Text(
@@ -374,19 +262,9 @@ internal fun SettingsHub(
 
                             SettingsDest.Blutter -> SettingsBlutterPage(t)
 
-                            SettingsDest.Tunnel -> SettingsTunnelPage(t, settings)
 
-                            SettingsDest.ApkBridge -> SettingsApkBridgePage(t, settings)
 
-                            SettingsDest.AiDeep -> SettingsAiDeepPage(t, settings)
 
-                            SettingsDest.Updates -> SettingsUpdatesPage(
-                                t,
-                                settings,
-                                updateManager,
-                                availableRelease,
-                                onRelease
-                            )
 
                             SettingsDest.Probe -> SettingsProbePage(t, settings)
 
@@ -399,39 +277,6 @@ internal fun SettingsHub(
                                     }
                                 }
                             }
-
-                            SettingsDest.TunnelStats -> PageScroll {
-                                GlassGroup {
-                                    Column(Modifier.padding(12.dp)) { TunnelStatsSection(t) }
-                                }
-                            }
-
-                            SettingsDest.Instructions -> PageScroll {
-                                GlassGroup {
-                                    Text(
-                                        t.instructionsBody,
-                                        modifier = Modifier.padding(14.dp),
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Text(
-                                        if (t.zh) {
-                                            "详细流程：先在服务页启动 SO MCP；需要电脑访问时开启 Cloudflare Tunnel，或 adb forward tcp:8000 tcp:8000。客户端配置 /mcp 后按 so_open -> analyze_* -> read_disasm/search_* 分析；修改前 session_open，dryRun 预览后再 patch，最后 build_so 导出。"
-                                        } else {
-                                            "Start SO MCP on Service tab; enable Cloudflare Tunnel or adb forward for desktop access; then follow so_open -> analyze_* -> read/search -> session_open -> dryRun patch -> build_so."
-                                        },
-                                        modifier = Modifier.padding(
-                                            horizontal = 14.dp,
-                                            vertical = 8.dp
-                                        ),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-
-                            SettingsDest.Credits -> SettingsCreditsPage(t)
-
-                            SettingsDest.DevelopmentCredits -> SettingsDevelopmentCreditsPage(t)
 
                             SettingsDest.Disclaimer -> PageScroll {
                                 GlassGroup {
@@ -455,70 +300,9 @@ internal fun SettingsHub(
                                 }
                             }
 
-                            SettingsDest.About -> {
-                                val aboutContext = LocalContext.current
-                                PageScroll {
-                                    GlassGroup {
-                                        Text(
-                                            t.aboutBody,
-                                            modifier = Modifier.padding(14.dp),
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
-                                        Row(Modifier.padding(14.dp)) {
-                                            PrimaryActionButton(t.joinQqGroup, {
-                                                joinQqGroup(aboutContext, t.zh)
-                                            }, modifier = Modifier.fillMaxWidth())
-                                        }
-                                    }
-                                    GlassGroup(
-                                        title = if (t.zh) "开源许可与来源" else "License & origin"
-                                    ) {
-                                        NavRow(
-                                            "${com.soreverse.mcp.core.Provenance.PROJECT} · ${com.soreverse.mcp.core.Provenance.LICENSE}",
-                                            com.soreverse.mcp.core.Provenance.COPYRIGHT,
-                                            Icons.Default.Info,
-                                            onClick = {
-                                                copy(
-                                                    aboutContext,
-                                                    com.soreverse.mcp.core.Provenance.LICENSE,
-                                                    t.copied
-                                                )
-                                            }
-                                        )
-                                        GroupDivider()
-                                        NavRow(
-                                            if (t.zh) "上游开源仓库（唯一官方来源）" else "Upstream source (only official origin)",
-                                            com.soreverse.mcp.core.Provenance.UPSTREAM,
-                                            Icons.Default.Info,
-                                            onClick = {
-                                                copy(
-                                                    aboutContext,
-                                                    com.soreverse.mcp.core.Provenance.UPSTREAM,
-                                                    t.copied
-                                                )
-                                            }
-                                        )
-                                        GroupDivider()
-                                        Text(
-                                            if (t.zh) {
-                                                "本软件为 AGPL-3.0 自由软件，受《中华人民共和国著作权法》《计算机软件保护条例》保护。任何再分发（含修改、改名、二次打包版本）必须：" +
-                                                    "保留本版权与许可声明、继续以 AGPL-3.0 授权、向每一位接收者提供完整对应源代码。\n\n" +
-                                                    "闭源分发、抹除署名、改名冒充原创即构成侵权。依据《著作权法》第五十二条、第五十三条，权利人可要求停止侵害、消除影响、赔礼道歉并赔偿损失；" +
-                                                    "情节严重的可按《著作权法》第五十四条主张惩罚性赔偿。GPL 作为授权合同在中国司法实践中已被确认有效并可强制执行（参见" +
-                                                    "北京高院\u201c数字天堂诉柚子科技\u201d、\u201c罗盒诉风灵\u201d等 GPL/开源协议案）。\n\n" +
-                                                    "侵权者将被记录（含运行时溯源指纹）并可能面临平台下架、公开通报及民事索赔。"
-                                            } else {
-                                                com.soreverse.mcp.core.Provenance.REDISTRIBUTION_NOTICE
-                                            },
-                                            modifier = Modifier.padding(14.dp),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-
+                            // 【魔改】关于/致谢页已移除
                             SettingsDest.Root -> Unit
+                            else -> { /* 已移除的页面 */ }
                         }
                     }
                 }

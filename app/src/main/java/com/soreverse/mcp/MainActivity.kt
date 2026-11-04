@@ -88,11 +88,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.soreverse.mcp.core.AppLog
-import com.soreverse.mcp.core.DeepAnalysisService
-import com.soreverse.mcp.core.GitHubRelease
-import com.soreverse.mcp.core.GitHubUpdateManager
-import com.soreverse.mcp.core.IntegrityGuard
-import com.soreverse.mcp.core.LogReporter
 import com.soreverse.mcp.core.SettingsStore
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
@@ -110,90 +105,11 @@ class MainActivity : ComponentActivity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 12)
         }
-        setContent { IntegrityGate { SoReverseApp() } }
+        setContent { SoReverseApp() }
     }
 }
 
-@Composable
-private fun IntegrityGate(content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    val activity = context as? Activity
-    var result by remember { mutableStateOf(IntegrityGuard.inspect(context.applicationContext)) }
-    LaunchedEffect(result.trusted) {
-        while (result.trusted) {
-            delay(3_000)
-            result = IntegrityGuard.inspect(context.applicationContext)
-        }
-    }
-    if (result.trusted) {
-        content()
-        return
-    }
-    var remaining by remember { mutableStateOf(10) }
-    LaunchedEffect(Unit) {
-        while (remaining > 0) {
-            delay(1000)
-            remaining--
-        }
-        activity?.let { IntegrityGuard.terminate(it) }
-    }
-    MaterialTheme(colorScheme = appleDarkColors()) {
-        Box(
-            Modifier.fillMaxSize().background(AppleColors.Dark.background),
-            contentAlignment = Alignment.Center
-        ) {
-            AlertDialog(
-                onDismissRequest = {},
-                containerColor = AppleColors.Dark.card,
-                titleContentColor = AppleColors.Dark.label,
-                textContentColor = AppleColors.Dark.secondaryLabel,
-                title = { Text("应用完整性校验失败", fontWeight = FontWeight.SemiBold) },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        // The headline used to assert a signature mismatch
-                        // unconditionally, but the failure may equally be a
-                        // runtime-instrumentation hit on a correctly signed
-                        // build. Naming the wrong cause sent users looking for
-                        // a repack that does not exist; pick the sentence from
-                        // the evidence instead.
-                        val identityMatched = result.expected.isNotBlank() &&
-                            result.actual.any { it == result.expected }
-                        Text(
-                            if (identityMatched) {
-                                "安装包签名与官方发布签名一致，但运行环境存在调试、注入或 Hook 风险。" +
-                                    "为保护本地数据、MCP 服务和原生编辑能力，应用将在 $remaining 秒后退出。"
-                            } else {
-                                "检测到当前安装包签名与官方发布签名不一致，或运行环境存在调试、注入、Hook 风险。" +
-                                    "为保护本地数据、MCP 服务和原生编辑能力，应用将在 $remaining 秒后退出。"
-                            }
-                        )
-                        Text("原因: ${result.reason}", style = MaterialTheme.typography.bodySmall)
-                        // Fingerprints only diagnose a mismatch; when the
-                        // signature already matches they are noise that reads
-                        // like a second accusation.
-                        if (!identityMatched) {
-                            if (result.expected.isNotBlank()) {
-                                Text(
-                                    "期望: ${result.expected.take(16)}...${result.expected.takeLast(16)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                            result.actual.forEach {
-                                Text(
-                                    "实际: ${it.take(16)}...${it.takeLast(16)}（不一致）",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
-                        }
-                    }
-                },
-                confirmButton = {}
-            )
-        }
-    }
-}
+// 【魔改】IntegrityGate 已移除（不做完整性校验）
 
 private fun localizedResources(context: Context, locale: java.util.Locale): android.content.res.Resources {
     val config = Configuration(context.resources.configuration).apply { setLocale(locale) }
@@ -309,10 +225,6 @@ private fun SoReverseApp() {
     val context = LocalContext.current
     val settings = remember { SettingsStore(context) }
     val appScope = rememberCoroutineScope()
-    val deepService = remember { DeepAnalysisService(context.applicationContext) }
-    val updateManager = remember { GitHubUpdateManager(context.applicationContext) }
-    var availableRelease by remember { mutableStateOf<GitHubRelease?>(null) }
-    var showUpdatePrompt by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(MainTab.Service) }
     var settingsDest by remember { mutableStateOf(SettingsDest.Root) }
     var language by remember { mutableStateOf(settings.language) }
@@ -327,10 +239,6 @@ private fun SoReverseApp() {
     var textScale by remember { mutableStateOf(settings.textScale) }
     var predictiveBack by remember { mutableStateOf(settings.predictiveBackEnabled) }
     var disclaimerAccepted by remember { mutableStateOf(settings.disclaimerAccepted) }
-    // 隐私合规闸门：用户就「错误与崩溃上报」隐私告知作出选择前，绝不上报任何数据。
-    var privacyConsentAnswered by remember { mutableStateOf(settings.crashReportConsentAnswered) }
-    val analyzeState = remember { AnalyzeUiState() }
-    var pendingDeepLeave by remember { mutableStateOf<(() -> Unit)?>(null) }
     var backProgress by remember { mutableStateOf(0f) }
     val t = textFor(language, context)
     val dark = when (themeMode) {
@@ -355,55 +263,11 @@ private fun SoReverseApp() {
         "full" -> false
         else -> false
     }
-    LaunchedEffect(Unit) {
-        if (settings.autoCheckUpdates) {
-            // Both channels: a beta published after the latest stable must also
-            // prompt (checkAnyChannel picks the highest release).
-            updateManager.checkAnyChannel()
-                .onSuccess { result ->
-                    if (result is com.soreverse.mcp.core.UpdateCheckResult.Available) {
-                        availableRelease = result.release
-                        showUpdatePrompt = true
-                    }
-                }
-                .onFailure { AppLog.w("Background update check failed: ${it.message}") }
-        }
-    }
-    val inSettingsDetail = tab == MainTab.Settings && settingsDest != SettingsDest.Root
-    val inAnalyzeDetail =
-        tab == MainTab.Analyze &&
-            (analyzeState.showDeepReport || analyzeState.expandedSoPath != null)
-    val inInternalDetail = inSettingsDetail || inAnalyzeDetail
-
-    LaunchedEffect(tab) {
-        if (tab == MainTab.Analyze && analyzeState.restoreDeepReportOnAnalyzeEntry) {
-            analyzeState.restoreDeepReportOnAnalyzeEntry = false
-            analyzeState.showDeepReport = true
-        }
-    }
-
-    fun requestDeepLeave(action: () -> Unit) {
-        if (tab == MainTab.Analyze &&
-            analyzeState.showDeepReport &&
-            analyzeState.deepAnalyzingPath != null
-        ) {
-            pendingDeepLeave = action
-        } else {
-            action()
-        }
-    }
+    // 【魔改】已移除版本更新检查
+    val inInternalDetail = tab == MainTab.Settings && settingsDest != SettingsDest.Root
 
     fun closeInternalDetail() {
-        when {
-            inSettingsDetail -> settingsDest = SettingsDest.Root
-
-            inAnalyzeDetail && analyzeState.showDeepReport -> requestDeepLeave {
-                analyzeState.showDeepReport =
-                    false
-            }
-
-            inAnalyzeDetail -> analyzeState.expandedSoPath = null
-        }
+        if (inInternalDetail) settingsDest = SettingsDest.Root
     }
 
     if (Build.VERSION.SDK_INT >= 34) {
@@ -418,23 +282,11 @@ private fun SoReverseApp() {
         }
     }
 
-    LaunchedEffect(
-        tab,
-        settingsDest,
-        analyzeState.expandedSoPath,
-        analyzeState.showDeepReport,
-        predictiveBack
-    ) {
+    LaunchedEffect(tab, settingsDest, predictiveBack) {
         if (!inInternalDetail || !predictiveBack) backProgress = 0f
     }
 
-    DisposableEffect(
-        predictiveBack,
-        tab,
-        settingsDest,
-        analyzeState.expandedSoPath,
-        analyzeState.showDeepReport
-    ) {
+    DisposableEffect(predictiveBack, tab, settingsDest) {
         val callback = object : OnBackPressedCallback(
             inInternalDetail && (!predictiveBack || Build.VERSION.SDK_INT < 34)
         ) {
@@ -482,10 +334,8 @@ private fun SoReverseApp() {
                                 t = t,
                                 onTab = {
                                     if (it != tab) {
-                                        requestDeepLeave {
-                                            tab = it
-                                            if (it != MainTab.Settings) settingsDest = SettingsDest.Root
-                                        }
+                                        tab = it
+                                        if (it != MainTab.Settings) settingsDest = SettingsDest.Root
                                     }
                                 }
                             )
@@ -527,33 +377,10 @@ private fun SoReverseApp() {
                                 MainTab.Service -> ServiceTab(
                                     t = t,
                                     settings = settings,
-                                    onOpenApkBridge = {
-                                        tab = MainTab.Settings
-                                        settingsDest = SettingsDest.ApkBridge
-                                    },
                                     onOpenKeepAlive = {
                                         tab = MainTab.Settings
                                         settingsDest = SettingsDest.KeepAlive
                                     },
-                                    onOpenTunnel = {
-                                        tab = MainTab.Settings
-                                        settingsDest = SettingsDest.Tunnel
-                                    }
-                                )
-
-                                MainTab.Analyze -> AnalyzeTab(
-                                    t = t,
-                                    settings = settings,
-                                    state = analyzeState,
-                                    scope = appScope,
-                                    deepService = deepService,
-                                    backProgress = backProgress,
-                                    onLeaveDeepReport = {
-                                        requestDeepLeave {
-                                            analyzeState.showDeepReport =
-                                                false
-                                        }
-                                    }
                                 )
 
                                 MainTab.Logs -> LogsTab(t = t, settings = settings)
@@ -563,9 +390,6 @@ private fun SoReverseApp() {
                                     backProgress = backProgress,
                                     t = t,
                                     settings = settings,
-                                    updateManager = updateManager,
-                                    availableRelease = availableRelease,
-                                    onRelease = { availableRelease = it },
                                     language = language,
                                     onLanguage = {
                                         language = it
@@ -659,107 +483,8 @@ private fun SoReverseApp() {
                         }) { Text(t.decline) }
                     }
                 )
-            } else if (!privacyConsentAnswered) {
-                // 隐私合规：单独就错误与崩溃上报作一次性告知并取得选择。
-                // 选择前 LogReporter 一律不外发（crashReportConsentAnswered=false 即静默）。
-                AlertDialog(
-                    onDismissRequest = {},
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface,
-                    textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    title = { Text(t.privacyConsentTitle, fontWeight = FontWeight.SemiBold) },
-                    text = { Text(t.privacyConsentBody) },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                settings.crashReportConsentAnswered = true
-                                privacyConsentAnswered = true
-                            },
-                            shape = RoundedCornerShape(LocalUiMetrics.current.controlRadius),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = Color.White
-                            )
-                        ) { Text(t.privacyConsentAllow) }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = {
-                            settings.crashReportConsentAnswered = true
-                            settings.crashReportEnabled = false
-                            LogReporter.clearQueue()
-                            privacyConsentAnswered = true
-                        }) { Text(t.privacyConsentDeny) }
-                    }
-                )
             }
-            pendingDeepLeave?.let { leave ->
-                AlertDialog(
-                    onDismissRequest = { pendingDeepLeave = null },
-                    title = { Text(if (t.zh) "AI 分析仍在进行" else "AI analysis is still running") },
-                    text = {
-                        Text(
-                            if (t.zh) {
-                                "离开对话页后，可以让分析在后台继续；下次打开分析页时会恢复当前对话。也可以立即终止本次分析。"
-                            } else {
-                                "Continue the analysis in the background and restore this conversation next time you open Analyze, or stop this analysis now."
-                            }
-                        )
-                    },
-                    dismissButton = {
-                        TextButton(onClick = {
-                            pendingDeepLeave = null
-                            analyzeState.restoreDeepReportOnAnalyzeEntry = tab == MainTab.Analyze
-                            leave()
-                        }) { Text(if (t.zh) "后台继续" else "Continue in background") }
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            pendingDeepLeave = null
-                            analyzeState.restoreDeepReportOnAnalyzeEntry = false
-                            analyzeState.deepJob?.cancel(
-                                CancellationException("Stopped by user while leaving")
-                            )
-                            leave()
-                        }) { Text(if (t.zh) "终止分析" else "Stop analysis") }
-                    }
-                )
-            }
-            if (showUpdatePrompt && availableRelease != null) {
-                val release = availableRelease!!
-                AlertDialog(
-                    onDismissRequest = { showUpdatePrompt = false },
-                    title = {
-                        Text(
-                            if (t.zh) "发现新版本 ${release.tag}" else "Update ${release.tag} available"
-                        )
-                    },
-                    text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(release.name, fontWeight = FontWeight.SemiBold)
-                            if (release.notes.isNotBlank()) {
-                                Text(
-                                    release.notes.take(800),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 12,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = {
-                            showUpdatePrompt = false
-                        }) { Text(if (t.zh) "稍后" else "Later") }
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            showUpdatePrompt = false
-                            tab = MainTab.Settings
-                            settingsDest = SettingsDest.Updates
-                        }) { Text(if (t.zh) "查看更新" else "View update") }
-                    }
-                )
-            }
+            // 【魔改】已移除版本更新提示弹窗
         }
     }
 }
@@ -768,7 +493,6 @@ private fun SoReverseApp() {
 private fun FloatingDock(tab: MainTab, t: UiText, onTab: (MainTab) -> Unit) {
     val items = listOf(
         Triple(MainTab.Service, Icons.Default.Home, if (t.zh) "控制" else "Console"),
-        Triple(MainTab.Analyze, Icons.Default.Memory, if (t.zh) "分析" else "Analyze"),
         Triple(MainTab.Logs, Icons.Default.Terminal, t.logs),
         Triple(MainTab.Settings, Icons.Default.Settings, t.settings)
     )

@@ -1,52 +1,25 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// 【魔改】兼容层：AI 深度报告存储已移除
+//
+// 本版本没有内置 AI，也就没有 AI 深度报告。
+// 保留同名 API 以兼容既有 UI 调用点，但全部返回空。
+//
 package com.soreverse.mcp.core
 
 import android.content.Context
-import java.io.File
-import org.json.JSONObject
 
 object DeepReportStore {
-    private const val FILE_NAME = "local-ai-reports.json"
 
-    fun save(context: Context, workspaceId: String, snapshot: JSONObject) {
-        if (workspaceId.isBlank()) return
-        synchronized(this) {
-            val root = readRoot(context)
-            root.put(workspaceId, snapshot)
-            writeRoot(context, root)
-        }
-    }
+    fun ids(@Suppress("unused") context: Context): Set<String> = emptySet()
 
-    fun load(context: Context, workspaceId: String): JSONObject? = synchronized(this) {
-        readRoot(context).optJSONObject(workspaceId)
-    }
+    fun save(
+        @Suppress("unused") context: Context,
+        @Suppress("unused") workspaceId: String,
+        @Suppress("unused") report: String
+    ) { /* no-op */ }
 
-    fun ids(context: Context): Set<String> = synchronized(this) {
-        val root = readRoot(context)
-        buildSet {
-            val keys = root.keys()
-            while (keys.hasNext()) add(keys.next())
-        }
-    }
+    fun load(@Suppress("unused") context: Context, @Suppress("unused") workspaceId: String): String? = null
 
-    fun remove(context: Context, workspaceId: String) {
-        synchronized(this) {
-            val root = readRoot(context)
-            root.remove(workspaceId)
-            writeRoot(context, root)
-        }
-    }
-
-    private fun readRoot(context: Context): JSONObject = runCatching {
-        JSONObject(File(context.filesDir, FILE_NAME).readText())
-    }.getOrDefault(JSONObject())
-
-    private fun writeRoot(context: Context, root: JSONObject) {
-        val target = File(context.filesDir, FILE_NAME)
-        val temporary = File(context.filesDir, "$FILE_NAME.tmp")
-        temporary.writeText(root.toString())
-        if (!temporary.renameTo(target)) {
-            target.writeText(root.toString())
-            temporary.delete()
-        }
-    }
+    fun remove(@Suppress("unused") context: Context, @Suppress("unused") workspaceId: String) { /* no-op */ }
 }

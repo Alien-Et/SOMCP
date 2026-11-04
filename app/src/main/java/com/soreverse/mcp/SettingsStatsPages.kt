@@ -177,11 +177,11 @@ internal fun TunnelStatsSection(t: UiText) {
     var refreshKey by remember { mutableStateOf(0) }
     val context = LocalContext.current
     var stats by remember(refreshKey) {
-        mutableStateOf(activeServer(context)?.tunnel?.tunnelStats() ?: JSONObject())
+        mutableStateOf(activeServer(context)?.tunnel?.tunnelStats ?: JSONObject())
     }
     LaunchedEffect(refreshKey) {
         while (true) {
-            stats = activeServer(context)?.tunnel?.tunnelStats() ?: JSONObject()
+            stats = activeServer(context)?.tunnel?.tunnelStats ?: JSONObject()
             delay(2000)
         }
     }

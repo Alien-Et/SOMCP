@@ -13,23 +13,14 @@
 package com.soreverse.mcp.mcp
 
 import android.util.Base64
-import com.soreverse.mcp.core.AgentKernel
 import com.soreverse.mcp.core.AppLog
-import com.soreverse.mcp.core.DeepAnalysisService
-import com.soreverse.mcp.core.DynamicAnalysisService
 import com.soreverse.mcp.core.HexCodec
-import com.soreverse.mcp.core.SubAgentRoles
 import com.soreverse.mcp.core.bool
 import com.soreverse.mcp.core.doubleValue
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.intValue
 import com.soreverse.mcp.core.ok
-import com.soreverse.mcp.core.resolveSubAgentLanguage
-import com.soreverse.mcp.core.runScopedSubAgent
 import com.soreverse.mcp.core.str
-import com.soreverse.mcp.core.subAgentCapabilities
-import com.soreverse.mcp.core.subAgentLimits
-import com.soreverse.mcp.core.subAgentRoleCatalog
 import com.soreverse.mcp.core.toJsonArray
 import java.security.MessageDigest
 import org.json.JSONArray
@@ -1544,225 +1535,8 @@ object ToolCatalog {
         }
     }
 
-    private val dynamicAnalyzeAi = object : ToolHandler {
-        override val meta = ToolMeta(
-            "dynamic_analyze_ai",
-            "独立动态分析 AI（对 unidbg/Frida 动态运行证据出报告）",
-            "Run the standalone dynamic-analysis AI: collect runtime evidence (unidbg emulated or Frida on-device) with dynamic_api analyze, then have an AI agent produce an independent analysis report over that evidence.",
-            "emulate",
-            ToolClass.EXTRA,
-            heavy = true
-        ) {
-            objectSchema(
-                props {
-                    "workspaceId" str "Workspace ID (from so_open)"
-                    "editSessionId" str "Edit session ID"
-                    "backend" str "Execution backend: unidbg or frida"
-                    "targetFunction" str "Target export/function to manually load and run"
-                    "targetPath" str "Display path of the target .so for the report"
-                    "args" arr "Integer/string arguments passed to the target function"
-                    "trace" bool "Enable trace"
-                    "dumpSize" int "Memory dump size"
-                    "dumpAddress" str "Hex address to dump"
-                    "dynamicRun" str "Pre-built dynamicRun evidence (skip re-running dynamic_api analyze when provided)"
-                    "request" str "User focus for this analysis turn"
-                }
-            )
-        }
+    // 【魔改】已移除 AI 工具：dynamic_analyze_ai / static_analyze_ai / agent_api
 
-        override fun handle(ctx: ToolContext, args: JSONObject): JSONObject {
-            val workspaceId = args.str("workspaceId")
-            val editSessionId = args.str("editSessionId")
-            val evidence = if (args.str("dynamicRun").isNotBlank()) {
-                args.str("dynamicRun")
-            } else {
-                val params = JSONObject().apply {
-                    args.optString("backend").takeIf(String::isNotBlank)?.let { put("backend", it) }
-                    args.optString("targetFunction")?.let { put("targetFunction", it) }
-                    args.optJSONArray("args")?.let { put("args", it) }
-                    if (args.has("trace")) put("trace", args.optBoolean("trace"))
-                    if (args.has("dumpSize")) put("dumpSize", args.optInt("dumpSize"))
-                    args.optString("dumpAddress").takeIf(String::isNotBlank)?.let { put("dumpAddress", it) }
-                }
-                val dispatch = ctx.engine.dynamicDispatch(
-                    workspaceId,
-                    editSessionId,
-                    "analyze",
-                    "",
-                    JSONArray().put(params)
-                )
-                // Intercept failed dispatch up front so its error JSON is never
-                // misread as valid evidence by the AI layer.
-                if (!dispatch.optBoolean("ok", true) || dispatch.has("error")) {
-                    return err(
-                        "DYNAMIC_DISPATCH_FAILED",
-                        dispatch.optJSONObject("error")?.optString("message")
-                            ?: ("could not collect dynamic evidence: " + dispatch.toString().take(400)),
-                        "backend",
-                        params.optString("backend")
-                    )
-                }
-                dispatch.toString()
-            }
-            if (evidence.isBlank()) {
-                return err("NO_DYNAMIC_EVIDENCE", "No dynamic evidence was produced; check backend/workspace/targetFunction.", "workspaceId", workspaceId)
-            }
-            val result = runCatching {
-                DynamicAnalysisService(ctx.context).analyzeSync(
-                    evidence,
-                    args.str("targetPath").ifBlank { workspaceId },
-                    ctx.settings,
-                    zh = true,
-                    request = args.str("request")
-                ).getOrThrow()
-            }
-            return result.fold(
-                onSuccess = { ok(JSONObject().put("report", it).put("evidence", evidence.take(8192))) },
-                onFailure = {
-                    err("DYNAMIC_AI_FAILED", it.message ?: "AI dynamic analysis failed", "workspaceId", workspaceId)
-                }
-            )
-        }
-    }
-
-    /**
-     * Static counterpart of [dynamicAnalyzeAi]: the same on-device
-     * DeepAnalysisService loop the app UI drives, exposed to MCP clients. The
-     * agent gathers evidence itself through catalog tools in its own context
-     * and returns a structured Markdown report.
-     */
-    private val staticAnalyzeAi = object : ToolHandler {
-        override val meta = ToolMeta(
-            "static_analyze_ai",
-            "静态深度分析 AI（自动取证循环出结构化报告，dynamic_analyze_ai 的静态对等工具）",
-            "Run the on-device static deep-analysis AI: it autonomously drives MCP evidence tools (so_open → analyze_functions → analyze_cfg → analyze_xrefs → analyze_crypto → analysis_report) in its own context and returns a structured Markdown report. Requires the MCP service to be running and AI settings configured.",
-            "analyze",
-            ToolClass.EXTRA,
-            heavy = true
-        ) {
-            objectSchema(
-                props {
-                    "path" str "Target SO path (local path or path relative to the work directory)"
-                    "zh" bool "Report language (default: true)"
-                    "request" str "User focus for this analysis turn"
-                }
-            )
-        }
-
-        override fun handle(ctx: ToolContext, args: JSONObject): JSONObject {
-            val path = args.str("path").ifBlank { args.str("targetPath") }
-            if (path.isBlank()) {
-                return err("PATH_REQUIRED", "static_analyze_ai needs the target SO path", "path", "")
-            }
-            val zh = if (args.has("zh")) args.bool("zh") else true
-            val result = runCatching {
-                DeepAnalysisService(ctx.context).analyzeSync(
-                    path,
-                    ctx.settings,
-                    zh,
-                    args.str("request")
-                ).getOrThrow()
-            }
-            return result.fold(
-                onSuccess = { report -> ok(JSONObject().put("report", report)) },
-                onFailure = {
-                    err("STATIC_AI_FAILED", it.message ?: "AI static deep analysis failed", "path", path)
-                }
-            )
-        }
-    }
-
-    /**
-     * External sub-agent gateway. The built-in deep-analysis agent gets the same
-     * capability as its `spawn_subagent` tool; this is the PC-side door onto the
-     * same runner, so a desktop MCP client can fan evidence-gathering out to the
-     * phone instead of pulling every tool result into its own context.
-     */
-    private val agentApi = object : ToolHandler {
-        override val meta = ToolMeta(
-            "agent_api",
-            "子代理网关（roles / run / capabilities：在手机上是独立上下文的专职取证代理）",
-            "Sub-agent gateway: list preset evidence roles, run one scoped sub-agent on-device (separate context, role-limited MCP tools, same configured AI endpoint), or report its limits.",
-            "agent",
-            ToolClass.EXTRA,
-            heavy = true
-        ) {
-            objectSchema(
-                props {
-                    "action".oneOf("roles (default) | run | capabilities", "roles", "run", "capabilities")
-                    "role" str "Role id returned by action=roles (required for action=run)"
-                    "task" str "The single self-contained question the sub-agent must answer"
-                    "workspaceId" str "Workspace to inherit from so_open so the sub-agent does not re-open the target"
-                    "zh" bool "Report language for action=run (default: follow the language of task)"
-                }
-            )
-        }
-
-        override fun handle(ctx: ToolContext, args: JSONObject): JSONObject {
-            val settings = ctx.settings
-            if (!settings.subAgentEnabled) {
-                return err(
-                    "SUBAGENT_DISABLED",
-                    "Sub-agents are switched off. Enable them in Settings → AI → 子代理 (Sub-agents), then call agent_api again."
-                )
-            }
-            return when (val action = args.str("action").ifBlank { "roles" }) {
-                "roles" -> ok(
-                    JSONObject()
-                        .put("roles", subAgentRoleCatalog(settings))
-                        .put("limits", subAgentLimits(settings))
-                )
-
-                "capabilities" -> ok(subAgentCapabilities(settings))
-
-                "run" -> {
-                    val role = SubAgentRoles.byId(args.str("role"))
-                        ?: return err(
-                            "UNKNOWN_ROLE",
-                            "Unknown sub-agent role. Call agent_api(action=roles) for the current list.",
-                            "role",
-                            args.str("role")
-                        )
-                    val task = args.str("task").trim()
-                    if (task.isBlank()) {
-                        return err(
-                            "TASK_REQUIRED",
-                            "action=run needs a task: one self-contained question naming the target function or address."
-                        )
-                    }
-                    val missing = AgentKernel.missingConfig(settings)
-                    if (missing.isNotEmpty()) {
-                        return err(
-                            "AI_NOT_CONFIGURED",
-                            "Sub-agents reuse the app's AI settings, and these are still empty: " +
-                                missing.joinToString(", ") +
-                                ". Configure endpoint, API key and model in Settings → AI.",
-                            "missing",
-                            missing.toJsonArray()
-                        )
-                    }
-                    runScopedSubAgent(
-                        ctx = ctx,
-                        role = role,
-                        task = task.take(4000),
-                        zh = resolveSubAgentLanguage(
-                            settings = settings,
-                            task = task,
-                            explicit = if (args.has("zh")) args.bool("zh") else null
-                        ),
-                        workspaceId = args.str("workspaceId")
-                    )
-                }
-
-                else -> err(
-                    "UNSUPPORTED_ACTION",
-                    "action must be one of roles, run, capabilities.",
-                    "action",
-                    action
-                )
-            }
-        }
-    }
 
     private val unidbgSession = EngineToolHandler(
         ToolMeta(
@@ -3362,7 +3136,7 @@ object ToolCatalog {
         emulateCall, emulateDump,
         unidbgSession, unidbgMemory, unidbgDebug, unidbgBatch,
         diffSo,
-        rizinApi, liefApi, unidbgApi, xansoApi, dynamicApi, dynamicAnalyzeAi, staticAnalyzeAi, agentApi,
+        rizinApi, liefApi, unidbgApi, xansoApi, dynamicApi,
         jniApi, packerApi, obfuscApi, strDecryptApi, antiDebugApi, importApi,
         sessionOpen, sessionHistory, sessionAudit,
         buildSo,

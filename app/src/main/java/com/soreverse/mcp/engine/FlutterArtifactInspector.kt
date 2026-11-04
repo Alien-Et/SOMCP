@@ -33,8 +33,9 @@ import org.json.JSONObject
  * of transient heap for a result that is a few kilobytes of JSON.
  */
 internal object FlutterArtifactInspector {
-    private const val MAX_APK_BYTES = 512L * 1024L * 1024L
-    private const val MAX_SO_BYTES = 256L * 1024L * 1024L
+    // 【魔改】Flutter 大小限制放开（原 512 MiB / 256 MiB）
+    private const val MAX_APK_BYTES = 4L * 1024L * 1024L * 1024L
+    private const val MAX_SO_BYTES = 4L * 1024L * 1024L * 1024L
     private const val MAX_ZIP_ENTRIES = 100_000
     private const val COPY_BUFFER_BYTES = 64 * 1024
     private const val SNAPSHOT_HASH_OFFSET = 20L
