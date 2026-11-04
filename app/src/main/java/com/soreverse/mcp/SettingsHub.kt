@@ -189,7 +189,7 @@ private fun SectionTitle(text: String) {
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.primary,
         fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 16.dp, bottom = 6.dp, start = 4.dp)
+        modifier = Modifier.padding(top = 20.dp, bottom = 8.dp, start = 4.dp)
     )
 }
 
@@ -247,8 +247,8 @@ internal fun SettingsHub(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = LocalUiMetrics.current.pagePad)
-                    .padding(bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 // 分组标题
                 // 分组标题（M3 SectionHeader 风格）

@@ -47,7 +47,6 @@ object AppLog {
     fun w(message: String) = add("W", message)
     fun e(message: String, throwable: Throwable? = null) {
         add("E", if (throwable == null) message else "$message: ${throwable.message}")
-        // 【魔改】已移除 LogReporter 上报，只保留本地日志
     }
 
     fun snapshot(): List<String> = synchronized(lock) { lines.toList() }

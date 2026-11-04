@@ -67,11 +67,16 @@
         </activity>
 
         <activity
-            android:name=".CrashReportActivity"
+            android:name=".AutoStartActivity"
+            android:exported="true"
             android:excludeFromRecents="true"
-            android:exported="false"
-            android:process=":crash"
-            android:taskAffinity="com.soreverse.mcp.crash" />
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="com.soreverse.mcp.AUTO_START" />
+            </intent-filter>
+        </activity>
 
         <service
             android:name=".service.McpForegroundService"

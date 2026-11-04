@@ -109,6 +109,14 @@ class MainActivity : ComponentActivity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 12)
         }
+        // 【魔改】打开 APP 自动启动 MCP 服务，无需手动点启动
+        if (!com.soreverse.mcp.service.McpForegroundService.isRunning()) {
+            runCatching {
+                com.soreverse.mcp.service.McpForegroundService.start(this)
+            }.onFailure {
+                com.soreverse.mcp.core.AppLog.w("Auto-start MCP service failed: ${it.message}")
+            }
+        }
         setContent { SoReverseApp() }
     }
 }

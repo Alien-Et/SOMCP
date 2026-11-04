@@ -197,8 +197,8 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () 
                 .fillMaxSize()
                 .padding(horizontal = pad)
                 .verticalScroll(rememberScrollState())
-                .padding(bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             SectionTitle(
                 if (t.zh) "服务状态" else "Service status",

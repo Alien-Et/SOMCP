@@ -838,7 +838,6 @@ class SettingsStore(context: Context) {
 
     /**
      * 隐私合规闸门：用户是否已就「错误与崩溃上报」的一次性隐私告知作出选择。
-     * 为 false 时 [com.soreverse.mcp.core.LogReporter] 一律不外发任何数据。
      * 与 [crashReportEnabled] 组合即三态：未询问 (false, true)、已同意 (true, true)、已拒绝 (true, false)。
      */
     var crashReportConsentAnswered: Boolean

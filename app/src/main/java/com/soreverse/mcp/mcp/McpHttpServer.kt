@@ -628,53 +628,11 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                 if (reset) tunnel.resetTunnelStats()
                 ok(tunnel.tunnelStats)
             },
-            tunnelStartHook = tunnelStart@{ mode, port, token, publicUrl ->
-                // A tunnel publishes the MCP surface to the public internet.
-                // Starting one over an unauthenticated tool channel (auth off)
-                // lets any LAN/rebinding attacker expose the device; refuse
-                // here — the app UI stays the consent path for that choice.
-                if (!settings.authEnabled) {
-                    return@tunnelStart err(
-                        "AUTH_REQUIRED",
-                        "tunnel_start is refused while token authentication is disabled: it would expose the service publicly with no token. Enable Settings > Service > Require access token first, or start the tunnel from the app UI."
-                    )
-                }
-                // MCP-initiated tunnels may only front the SOMCP service itself;
-                // arbitrary localhost ports would turn the tunnel into a proxy
-                // for other apps running on the device.
-                if (port > 0 && port != settings.port) {
-                    return@tunnelStart err(
-                        "PORT_NOT_ALLOWED",
-                        "Tunnel targetPort over MCP is restricted to the SOMCP service port (${settings.port}); omit targetPort to use the configured tunnel target.",
-                        "targetPort",
-                        port
-                    )
-                }
-                val resolvedMode = if (mode ==
-                    "named"
-                ) {
-                    CloudflareTunnelManager.Mode.NAMED
-                } else {
-                    CloudflareTunnelManager.Mode.QUICK
-                }
-                val targetPort = if (port > 0) port else settings.tunnelTargetPort
-                val tok = if (token.isNotBlank()) token else settings.tunnelNamedToken
-                if (resolvedMode == CloudflareTunnelManager.Mode.NAMED &&
-                    !publicUrl.isNullOrBlank()
-                ) {
-                    settings.tunnelNamedPublicUrl = publicUrl
-                }
-                val ts = tunnel.start(targetPort, resolvedMode, tok)
-                ok(
-                    tunnel.snapshotJson().put("message", ts.message).put(
-                        "publicUrl",
-                        ts.publicUrl ?: JSONObject.NULL
-                    )
-                )
+            tunnelStartHook = { _, _, _, _ ->
+                err("TUNNEL_REMOVED", "Cloudflare tunnel has been removed in this build")
             },
             tunnelStopHook = {
-                tunnel.stop()
-                ok(JSONObject().put("stopped", true))
+                ok(JSONObject().put("stopped", false))
             },
             apkStatusHook = { probe ->
                 if (probe) apkBridge.probe()

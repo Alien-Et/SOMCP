@@ -176,8 +176,6 @@ class McpForegroundService : Service() {
             activeHost = host
             running = true
             updateFloating()
-            maybeAutoStartTunnel(settings)
-            registerTunnelReconnect(settings)
         }.onFailure {
             running = false
             activePort = -1
@@ -223,119 +221,8 @@ class McpForegroundService : Service() {
         false
     }
 
-    private fun maybeAutoStartTunnel(settings: SettingsStore) {
-        if (!settings.tunnelAutoStart) return
-        // If the user enabled "auto-start with service" but kept tunnelMode=off (the default),
-        // honour the switch by falling back to QUICK mode and persisting it so the choice sticks
-        // across restarts. The previous behaviour silently swallowed the auto-start, which is
-        // the root cause of "tunnelAutoStart is on yet Cloudflare never starts".
-        val raw = settings.tunnelMode
-        val mode = when (raw) {
-            "quick" -> com.soreverse.mcp.core.CloudflareTunnelManager.Mode.QUICK
-
-            "named" -> com.soreverse.mcp.core.CloudflareTunnelManager.Mode.NAMED
-
-            else -> {
-                AppLog.i(
-                    "Auto-start tunnel: tunnelMode was '$raw', promoting to 'quick' to honour tunnelAutoStart=true"
-                )
-                settings.tunnelMode = "quick"
-                com.soreverse.mcp.core.CloudflareTunnelManager.Mode.QUICK
-            }
-        }
-        if (mode == com.soreverse.mcp.core.CloudflareTunnelManager.Mode.NAMED &&
-            settings.tunnelNamedToken.isBlank()
-        ) {
-            AppLog.w("Auto-start tunnel: named mode selected but token is blank, skipping")
-            return
-        }
-        Thread {
-            // If the user toggled the master switch off again before this
-            // thread got scheduled, abort cleanly instead of starting a
-            // cloudflared child against a Service Context that is racing
-            // to onDestroy. Same root cause as the reconnect race above.
-            if (!running) {
-                AppLog.i("Auto-start tunnel aborted: service stopped before launch")
-                return@Thread
-            }
-            val target = settings.tunnelTargetPort.coerceAtLeast(settings.port)
-            try {
-                server?.tunnel?.start(target, mode, settings.tunnelNamedToken)
-                AppLog.i(
-                    "Auto-started Cloudflare tunnel: mode=${settings.tunnelMode} target=$target"
-                )
-            } catch (e: Throwable) {
-                AppLog.w("Auto-start tunnel failed: ${e.message}")
-            }
-        }.apply {
-            isDaemon = true
-            name = "tunnel-autostart"
-        }.start()
-    }
 
     private var reconnectReceiver: android.content.BroadcastReceiver? = null
-    private fun registerTunnelReconnect(settings: SettingsStore) {
-        if (!settings.tunnelReconnect) return
-        unregisterTunnelReconnect()
-        val filter = android.content.IntentFilter("com.soreverse.mcp.TUNNEL_STATUS")
-        val receiver = object : android.content.BroadcastReceiver() {
-            override fun onReceive(c: Context?, intent: Intent?) {
-                val state = intent?.getStringExtra("state") ?: return
-                val terminal = intent.getBooleanExtra("terminal", false)
-                if (state == "FAILED" && settings.tunnelAutoStart && !terminal) {
-                    AppLog.w("Tunnel reported FAILED — scheduling reconnect")
-                    Thread {
-                        // Back off long enough that an in-flight onDestroy()
-                        // has time to finish tearing the tunnel down; the
-                        // previous hard-coded 3s was the exact cause of the
-                        // crash: the reconnect thread re-entered
-                        // CloudflareTunnelManager.start() while stop() was
-                        // still joining the watch thread under the same
-                        // monitor. Pull the backoff from settings so the
-                        // operator can widen it if their device takes longer
-                        // to release the cloudflared child.
-                        Thread.sleep(settings.tunnelReconnectBackoffSec.coerceIn(1, 60) * 1000L)
-                        // Double-gate: `running` flips false synchronously in
-                        // both stop(context) and onDestroy, so by the time the
-                        // backoff elapses after the FAILED broadcast (which
-                        // usually accompanies a user toggle off) we expect
-                        // to observe the false here. Skipping the restart
-                        // prevents spawning a fresh cloudflared child against
-                        // a dying Service Context — the original crash root
-                        // cause.
-                        if (!running) {
-                            AppLog.i("Tunnel reconnect skipped: service no longer running")
-                            return@Thread
-                        }
-                        val mode = when (settings.tunnelMode) {
-                            "quick" -> com.soreverse.mcp.core.CloudflareTunnelManager.Mode.QUICK
-                            "named" -> com.soreverse.mcp.core.CloudflareTunnelManager.Mode.NAMED
-                            else -> com.soreverse.mcp.core.CloudflareTunnelManager.Mode.QUICK
-                        }
-                        try {
-                            server?.tunnel?.start(
-                                settings.tunnelTargetPort.coerceAtLeast(settings.port),
-                                mode,
-                                settings.tunnelNamedToken
-                            )
-                        } catch (e: Throwable) {
-                            AppLog.w("Tunnel reconnect start failed: ${e.message}")
-                        }
-                    }.apply {
-                        isDaemon = true
-                        name = "tunnel-reconnect"
-                    }.start()
-                }
-            }
-        }
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag", "DEPRECATION")
-            registerReceiver(receiver, filter)
-        }
-        reconnectReceiver = receiver
-    }
 
     private fun unregisterTunnelReconnect() {
         reconnectReceiver?.let { runCatching { unregisterReceiver(it) } }
