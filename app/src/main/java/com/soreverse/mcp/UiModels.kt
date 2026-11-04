@@ -19,14 +19,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.json.JSONObject
 
-internal enum class MainTab { Service, Logs, Settings }
+internal enum class MainTab { Service, Settings }
 internal enum class SetupTarget { KeepAlive }
 internal enum class SettingsDest {
     Root,
     ServiceConfig,
-    Appearance,
     KeepAlive,
     Access,
+    Language,
+    Logs,
     Limits,
     Export,
     Audit,

@@ -68,9 +68,10 @@ import com.soreverse.mcp.core.SettingsStore
 private fun settingsTitle(t: UiText, dest: SettingsDest): String = when (dest) {
     SettingsDest.Root -> t.settings
     SettingsDest.ServiceConfig -> if (t.zh) "服务配置" else "Service Configuration"
-    SettingsDest.Appearance -> if (t.zh) "外观与语言" else "Appearance"
     SettingsDest.KeepAlive -> t.keepAlive
-    SettingsDest.Access -> if (t.zh) "MCP 访问控制" else "MCP Access"
+    SettingsDest.Access -> if (t.zh) "访问控制" else "MCP Access"
+    SettingsDest.Language -> t.language
+    SettingsDest.Logs -> t.logs
     SettingsDest.Limits -> if (t.zh) "返回数量" else "Result Limits"
     SettingsDest.Export -> if (t.zh) "导出" else "Export"
     SettingsDest.Audit -> if (t.zh) "编辑校验与审计" else "Edit & Audit"
@@ -194,41 +195,32 @@ internal fun SettingsHub(
                         if (t.zh) "端口 / 地址 / 工具" else "Port / URLs / tools",
                         Icons.Default.Settings,
                         MaterialTheme.colorScheme.primary,
-                        { onDest(SettingsDest.ServiceConfig) }
+                        { onDest(SettingsDest.ServiceConfig) },
+                        modifier = Modifier.weight(1f)
                     )
-                    SettingsTile(
-                        if (t.zh) "外观" else "Look",
-                        if (t.zh) "主题 / 强调色 / 密度" else "Theme / accent / density",
-                        Icons.Default.Tune,
-                        AppPalette.indigo,
-                        { onDest(SettingsDest.Appearance) }
-                    )
-                }
-
-                SectionTitle(if (t.zh) "服务" else "Service")
-                TileGrid {
                     SettingsTile(
                         if (t.zh) "保活" else "Keep-alive",
                         if (t.zh) "唤醒锁 / 自启" else "Wake lock / boot",
                         Icons.Default.PowerSettingsNew,
                         AppPalette.green,
-                        { onDest(SettingsDest.KeepAlive) }
+                        { onDest(SettingsDest.KeepAlive) },
+                        modifier = Modifier.weight(1f)
                     )
                     SettingsTile(
-                        if (t.zh) "访问控制" else "Access",
+                        if (t.zh) "访问" else "Access",
                         if (t.zh) "免 key / 认证" else "No key / auth",
                         Icons.Default.Lock,
                         AppPalette.orange,
-                        { onDest(SettingsDest.Access) }
+                        { onDest(SettingsDest.Access) },
+                        modifier = Modifier.weight(1f)
                     )
-                }
-                TileGrid {
                     SettingsTile(
-                        if (t.zh) "返回数量" else "Limits",
-                        if (t.zh) "工具返回上限" else "Tool result limits",
-                        Icons.Default.DataUsage,
-                        AppPalette.teal,
-                        { onDest(SettingsDest.Limits) }
+                        if (t.zh) "语言" else "Language",
+                        if (t.zh) "界面语言" else "Interface language",
+                        Icons.Default.Info,
+                        AppPalette.indigo,
+                        { onDest(SettingsDest.Language) },
+                        modifier = Modifier.weight(1f)
                     )
                 }
 
@@ -239,48 +231,60 @@ internal fun SettingsHub(
                         if (t.zh) "编辑校验" else "Edit checks",
                         Icons.Default.EditNote,
                         AppPalette.purple,
-                        { onDest(SettingsDest.Audit) }
+                        { onDest(SettingsDest.Audit) },
+                        modifier = Modifier.weight(1f)
                     )
                     SettingsTile(
                         "Blutter",
                         if (t.zh) "Flutter 分析" else "Flutter analysis",
                         Icons.Default.Memory,
                         AppPalette.indigo,
-                        { onDest(SettingsDest.Blutter) }
+                        { onDest(SettingsDest.Blutter) },
+                        modifier = Modifier.weight(1f)
                     )
-                }
-                TileGrid {
                     SettingsTile(
                         if (t.zh) "探测" else "Probe",
                         if (t.zh) "环境探测" else "Environment probe",
                         Icons.Default.BugReport,
                         AppPalette.green,
-                        { onDest(SettingsDest.Probe) }
+                        { onDest(SettingsDest.Probe) },
+                        modifier = Modifier.weight(1f)
                     )
                     SettingsTile(
                         if (t.zh) "调用审计" else "Tool stats",
                         if (t.zh) "工具调用统计" else "Tool call stats",
                         Icons.Default.Analytics,
                         AppPalette.teal,
-                        { onDest(SettingsDest.ToolStats) }
+                        { onDest(SettingsDest.ToolStats) },
+                        modifier = Modifier.weight(1f)
                     )
                 }
 
                 SectionTitle(if (t.zh) "其他" else "Other")
                 TileGrid {
                     SettingsTile(
+                        if (t.zh) "日志" else "Logs",
+                        if (t.zh) "运行日志" else "Runtime logs",
+                        Icons.Default.Info,
+                        AppPalette.teal,
+                        { onDest(SettingsDest.Logs) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    SettingsTile(
                         if (t.zh) "导出" else "Export",
                         if (t.zh) "导出产物" else "Export artifacts",
                         Icons.Default.FileDownload,
                         AppPalette.orange,
-                        { onDest(SettingsDest.Export) }
+                        { onDest(SettingsDest.Export) },
+                        modifier = Modifier.weight(1f)
                     )
                     SettingsTile(
                         if (t.zh) "备份恢复" else "Backup",
                         if (t.zh) "备份 / 还原" else "Backup / restore",
                         Icons.Default.CloudUpload,
                         AppPalette.indigo,
-                        { onDest(SettingsDest.BackupRestore) }
+                        { onDest(SettingsDest.BackupRestore) },
+                        modifier = Modifier.weight(1f)
                     )
                 }
                 // License footer
@@ -313,36 +317,13 @@ internal fun SettingsHub(
                         when (dest) {
                             SettingsDest.ServiceConfig -> SettingsServiceConfigPage(t, settings)
 
-                            SettingsDest.Appearance ->
-                                SettingsAppearancePage(
-                                    t,
-                                    language,
-                                    onLanguage,
-                                    themeMode,
-                                    onTheme,
-                                    accentColor,
-                                    onAccent,
-                                    pureBlackDark,
-                                    onPureBlack,
-                                    uiDensity,
-                                    onDensity,
-                                    cornerStyle,
-                                    onCorner,
-                                    motionMode,
-                                    onMotion,
-                                    showAdvancedHome,
-                                    onShowAdvancedHome,
-                                    highContrast,
-                                    onHighContrast,
-                                    textScale,
-                                    onTextScale,
-                                    predictiveBack,
-                                    onPredictiveBack
-                                )
-
                             SettingsDest.KeepAlive -> SettingsKeepAlivePage(t, settings)
 
                             SettingsDest.Access -> SettingsAccessPage(t, settings)
+
+                            SettingsDest.Language -> SettingsLanguagePage(t, language, onLanguage)
+
+                            SettingsDest.Logs -> LogsTab(t = t, settings = settings)
 
                             SettingsDest.Limits -> SettingsLimitsPage(t, settings)
 

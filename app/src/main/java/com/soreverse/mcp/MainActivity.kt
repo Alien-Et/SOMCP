@@ -53,10 +53,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
@@ -383,8 +387,6 @@ private fun SoReverseApp() {
                                     },
                                 )
 
-                                MainTab.Logs -> LogsTab(t = t, settings = settings)
-
                                 MainTab.Settings -> SettingsHub(
                                     modifier = Modifier,
                                     backProgress = backProgress,
@@ -489,32 +491,59 @@ private fun SoReverseApp() {
     }
 }
 
+
+
 @Composable
 private fun FloatingDock(tab: MainTab, t: UiText, onTab: (MainTab) -> Unit) {
     val items = listOf(
         Triple(MainTab.Service, Icons.Default.Home, if (t.zh) "控制" else "Console"),
-        Triple(MainTab.Logs, Icons.Default.Terminal, t.logs),
         Triple(MainTab.Settings, Icons.Default.Settings, t.settings)
     )
+    // 液态玻璃悬浮条：半透明 + 描边 + 阴影 + 圆角矩形
     Box(
         Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 24.dp, vertical = 8.dp),
+            .padding(horizontal = 20.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(Glass.cardStrong)
+                .border(1.dp, Glass.strokeStrong, RoundedCornerShape(24.dp))
+                .padding(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             items.forEach { (value, icon, label) ->
-                CapsuleTab(
-                    icon = icon,
-                    label = label,
-                    selected = tab == value,
-                    onClick = { onTab(value) }
-                )
+                val selected = tab == value
+                val accent = MaterialTheme.colorScheme.primary
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(if (selected) accent else Color.Transparent)
+                        .clickable { onTab(value) }
+                        .padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        icon,
+                        contentDescription = label,
+                        tint = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                    )
+                }
             }
         }
     }

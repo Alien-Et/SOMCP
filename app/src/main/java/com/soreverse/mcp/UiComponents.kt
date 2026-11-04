@@ -335,6 +335,7 @@ internal fun ModernCardBare(
 internal fun ModernCard(
     title: String,
     subtitle: String = "",
+    footer: String = "",
     icon: ImageVector? = null,
     accent: Color = MaterialTheme.colorScheme.primary,
     modifier: Modifier = Modifier,
@@ -381,6 +382,14 @@ internal fun ModernCard(
             }
         }
         content()
+        if (footer.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                footer,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+            )
+        }
     }
 }
 

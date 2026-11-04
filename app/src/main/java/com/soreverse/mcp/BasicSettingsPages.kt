@@ -19,6 +19,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
@@ -186,7 +192,12 @@ internal fun SettingsKeepAlivePage(t: UiText, settings: SettingsStore) {
     var wakeLock by remember { mutableStateOf(settings.wakeLockEnabled) }
     var bootAutoStart by remember { mutableStateOf(settings.bootAutoStart) }
     PageScroll {
-        GlassGroup {
+        ModernCard(
+            title = if (t.zh) "保活开关" else "Keep-alive switches",
+            subtitle = if (t.zh) "唤醒锁 / 悬浮窗 / 开机自启" else "Wake lock / floating / boot",
+            icon = Icons.Default.PowerSettingsNew,
+            accent = AppPalette.green
+        ) {
             ToggleRow(t.wakeLock, wakeLock) {
                 wakeLock = it
                 settings.wakeLockEnabled = it
@@ -220,7 +231,12 @@ internal fun SettingsKeepAlivePage(t: UiText, settings: SettingsStore) {
                 settings.bootAutoStart = it
             }
         }
-        GlassGroup(footer = keepAliveAdvice(t.zh)) {
+        ModernCard(
+            title = if (t.zh) "就绪检查" else "Readiness checks",
+            footer = keepAliveAdvice(t.zh),
+            icon = Icons.Default.CheckCircle,
+            accent = AppPalette.teal
+        ) {
             val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
             val checks = listOf(
                 (if (t.zh) "WakeLock" else "WakeLock") to wakeLock,
@@ -243,12 +259,17 @@ internal fun SettingsKeepAlivePage(t: UiText, settings: SettingsStore) {
             )
             checks.forEachIndexed { index, (label, ready) ->
                 if (index > 0) GroupDivider()
-                Text(
-                    "${if (ready) "✓" else "○"} $label",
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                    color = if (ready) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Row(
+                    Modifier.padding(horizontal = 2.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    StatusDot(ready)
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
             }
             GroupDivider()
             Text(
@@ -346,12 +367,11 @@ internal fun SettingsAccessPage(t: UiText, settings: SettingsStore) {
     var authEnabled by remember { mutableStateOf(settings.authEnabled) }
     var accessToken by remember { mutableStateOf(settings.accessToken) }
     PageScroll {
-        GlassGroup {
-            Text(
-                if (t.zh) "谁能连接" else "Who can connect",
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.titleSmall
-            )
+        ModernCard(
+            title = if (t.zh) "谁能连接" else "Who can connect",
+            icon = Icons.Default.Lock,
+            accent = AppPalette.orange
+        ) {
             Text(
                 when {
                     settings.tunnelMode != "off" ->
@@ -385,7 +405,11 @@ internal fun SettingsAccessPage(t: UiText, settings: SettingsStore) {
                 accessToken = settings.accessToken
             }
         }
-        GlassGroup(title = if (t.zh) "绑定地址" else "Bind address") {
+        ModernCard(
+            title = if (t.zh) "绑定地址" else "Bind address",
+            icon = Icons.Default.Wifi,
+            accent = AppPalette.teal
+        ) {
             ChipRow(
                 listOf(
                     "0.0.0.0" to if (t.zh) "允许局域网" else "LAN",
@@ -403,8 +427,11 @@ internal fun SettingsAccessPage(t: UiText, settings: SettingsStore) {
                 }
             )
         }
-        GlassGroup(
-            footer = if (t.zh) "修改端口、绑定地址或 token 后，重启服务生效。" else "Restart the service after changing port, bind address, or token."
+        ModernCard(
+            title = if (t.zh) "访问 Token" else "Access token",
+            footer = if (t.zh) "修改端口、绑定地址或 token 后，重启服务生效。" else "Restart the service after changing port, bind address, or token.",
+            icon = Icons.Default.Key,
+            accent = AppPalette.purple
         ) {
             OutlinedTextField(
                 value = accessToken,
