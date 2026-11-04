@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -29,6 +30,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.DataUsage
+import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Description
@@ -76,33 +83,30 @@ private fun settingsTitle(t: UiText, dest: SettingsDest): String = when (dest) {
 
 @Composable
 private fun SettingsTile(title: String, subtitle: String, icon: ImageVector, tint: Color, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(22.dp)
     Column(
         modifier
             .clip(shape)
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
-            .border(
-                BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
-                shape
-            )
+            .background(Glass.card)
+            .border(1.dp, Glass.stroke, shape)
             .clickable(onClick = onClick)
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Box(
             Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(tint.copy(alpha = 0.14f)),
+                .size(40.dp)
+                .clip(RoundedCornerShape(13.dp))
+                .background(tint.copy(alpha = 0.16f)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp))
+            Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
         }
         Text(
             title,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
-            style = MaterialTheme.typography.titleSmall
+            style = MaterialTheme.typography.titleMedium
         )
         Text(
             subtitle,
@@ -113,6 +117,28 @@ private fun SettingsTile(title: String, subtitle: String, icon: ImageVector, tin
         )
     }
 }
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+    )
+}
+
+@Composable
+private fun TileGrid(content: @Composable RowScope.() -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        content()
+    }
+}
+
 
 @Composable
 internal fun SettingsHub(
@@ -160,37 +186,101 @@ internal fun SettingsHub(
                     .padding(bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    if (t.zh) "常用" else "Essentials",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                // 分组标题
+                SectionTitle(if (t.zh) "常用" else "Essentials")
+                TileGrid {
                     SettingsTile(
                         if (t.zh) "服务配置" else "Service",
-                        if (t.zh) "目录 / 端口 / 地址 / 工具" else "Directory / port / URLs / tools",
+                        if (t.zh) "端口 / 地址 / 工具" else "Port / URLs / tools",
                         Icons.Default.Settings,
                         MaterialTheme.colorScheme.primary,
-                        {
-                            onDest(SettingsDest.ServiceConfig)
-                        },
-                        Modifier.weight(1f)
+                        { onDest(SettingsDest.ServiceConfig) }
                     )
-                    SettingsTile(if (t.zh) "外观" else "Look", if (t.zh) "主题 / 强调色 / 密度" else "Theme / accent / density", Icons.Default.Tune, AppPalette.indigo, {
-                        onDest(SettingsDest.Appearance)
-                    }, Modifier.weight(1f))
+                    SettingsTile(
+                        if (t.zh) "外观" else "Look",
+                        if (t.zh) "主题 / 强调色 / 密度" else "Theme / accent / density",
+                        Icons.Default.Tune,
+                        AppPalette.indigo,
+                        { onDest(SettingsDest.Appearance) }
+                    )
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+
+                SectionTitle(if (t.zh) "服务" else "Service")
+                TileGrid {
                     SettingsTile(
                         if (t.zh) "保活" else "Keep-alive",
                         if (t.zh) "唤醒锁 / 自启" else "Wake lock / boot",
                         Icons.Default.PowerSettingsNew,
                         AppPalette.green,
-                        {
-                            onDest(SettingsDest.KeepAlive)
-                        },
-                        Modifier.weight(1f)
+                        { onDest(SettingsDest.KeepAlive) }
+                    )
+                    SettingsTile(
+                        if (t.zh) "访问控制" else "Access",
+                        if (t.zh) "免 key / 认证" else "No key / auth",
+                        Icons.Default.Lock,
+                        AppPalette.orange,
+                        { onDest(SettingsDest.Access) }
+                    )
+                }
+                TileGrid {
+                    SettingsTile(
+                        if (t.zh) "返回数量" else "Limits",
+                        if (t.zh) "工具返回上限" else "Tool result limits",
+                        Icons.Default.DataUsage,
+                        AppPalette.teal,
+                        { onDest(SettingsDest.Limits) }
+                    )
+                }
+
+                SectionTitle(if (t.zh) "工具" else "Tools")
+                TileGrid {
+                    SettingsTile(
+                        if (t.zh) "审计" else "Audit",
+                        if (t.zh) "编辑校验" else "Edit checks",
+                        Icons.Default.EditNote,
+                        AppPalette.purple,
+                        { onDest(SettingsDest.Audit) }
+                    )
+                    SettingsTile(
+                        "Blutter",
+                        if (t.zh) "Flutter 分析" else "Flutter analysis",
+                        Icons.Default.Memory,
+                        AppPalette.indigo,
+                        { onDest(SettingsDest.Blutter) }
+                    )
+                }
+                TileGrid {
+                    SettingsTile(
+                        if (t.zh) "探测" else "Probe",
+                        if (t.zh) "环境探测" else "Environment probe",
+                        Icons.Default.BugReport,
+                        AppPalette.green,
+                        { onDest(SettingsDest.Probe) }
+                    )
+                    SettingsTile(
+                        if (t.zh) "调用审计" else "Tool stats",
+                        if (t.zh) "工具调用统计" else "Tool call stats",
+                        Icons.Default.Analytics,
+                        AppPalette.teal,
+                        { onDest(SettingsDest.ToolStats) }
+                    )
+                }
+
+                SectionTitle(if (t.zh) "其他" else "Other")
+                TileGrid {
+                    SettingsTile(
+                        if (t.zh) "导出" else "Export",
+                        if (t.zh) "导出产物" else "Export artifacts",
+                        Icons.Default.FileDownload,
+                        AppPalette.orange,
+                        { onDest(SettingsDest.Export) }
+                    )
+                    SettingsTile(
+                        if (t.zh) "备份恢复" else "Backup",
+                        if (t.zh) "备份 / 还原" else "Backup / restore",
+                        Icons.Default.CloudUpload,
+                        AppPalette.indigo,
+                        { onDest(SettingsDest.BackupRestore) }
                     )
                 }
                 // License footer

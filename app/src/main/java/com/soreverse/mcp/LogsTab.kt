@@ -1,6 +1,7 @@
 package com.soreverse.mcp
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -164,13 +165,13 @@ internal fun LogsTab(t: UiText, settings: SettingsStore) {
 
 @Composable
 private fun LogActionButton(label: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(14.dp)
     Row(
         modifier
-            .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Glass.card)
+            .border(1.dp, Glass.stroke, RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 10.dp),
+            .padding(horizontal = 10.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
@@ -219,7 +220,10 @@ private fun ModernLogPanel(lines: List<String>, zh: Boolean, autoFollow: Boolean
     }
     LazyColumn(
         state = listState,
-        modifier = modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)),
+        modifier = modifier
+            .clip(RoundedCornerShape(24.dp))
+            .background(Glass.bgDeep)
+            .border(1.dp, Glass.stroke, RoundedCornerShape(24.dp)),
         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
     ) {
         itemsIndexed(lines, key = { index, line -> "$index:$line" }) { index, raw ->
@@ -238,7 +242,7 @@ private fun ModernLogPanel(lines: List<String>, zh: Boolean, autoFollow: Boolean
                         ) {
                             Color.Transparent
                         } else {
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f)
+                            Glass.card.copy(alpha = 0.5f)
                         }
                     )
                     .padding(horizontal = 6.dp, vertical = 7.dp),
@@ -264,17 +268,16 @@ private fun ModernLogPanel(lines: List<String>, zh: Boolean, autoFollow: Boolean
                     fontFamily = FontFamily.Monospace
                 )
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(
+                    MonoText(
                         line.time,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.labelSmall,
-                        fontFamily = FontFamily.Monospace
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Text(
+                    MonoText(
                         line.message,
-                        color = MaterialTheme.colorScheme.onSurface,
                         style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2
                     )
                 }
             }

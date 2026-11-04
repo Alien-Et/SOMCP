@@ -33,11 +33,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -182,51 +185,46 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () 
                 }
             }
         )
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            val compact = maxHeight < 700.dp
-            val pad = LocalUiMetrics.current.pagePad
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = pad)
-                    .padding(bottom = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 14.dp)
-            ) {
-                PowerSurface(
-                    t = t,
-                    running = running,
-                    port = settings.port,
-                    compact = compact,
-                    onPower = toggleServer,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(if (compact) 0.42f else 0.46f)
-                )
+        val pad = LocalUiMetrics.current.pagePad
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = pad)
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            SectionTitle(
+                if (t.zh) "服务状态" else "Service status",
+                if (t.zh) "本地 MCP · 端口 $${settings.port}" else "Local MCP · port $${settings.port}"
+            )
+            // 大状态卡：运行状态 + 端口 + 启动/停止按钮
+            StatusCard(
+                t = t,
+                running = running,
+                port = settings.port,
+                onPower = toggleServer
+            )
 
-                ReadinessStrip(
-                    items = listOf(
-                        ReadinessItem(
-                            label = if (t.zh) "保活" else "Keep-alive",
-                            value = if (keepAliveReady) (if (t.zh) "已就绪" else "Ready") else (if (t.zh) "未就绪" else "Not ready"),
-                            ok = keepAliveReady,
-                            onClick = { setupPrompt = SetupTarget.KeepAlive }
-                        )
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
+            SectionTitle(if (t.zh) "保活状态" else "Keep-alive")
+            // 保活状态行
+            StatusRow(
+                label = if (t.zh) "保活" else "Keep-alive",
+                value = if (keepAliveReady) (if (t.zh) "已就绪" else "Ready") else (if (t.zh) "未就绪" else "Not ready"),
+                ok = keepAliveReady,
+                hint = if (t.zh) "后台运行可能被系统中断 · 轻点设置" else "Background may be interrupted · tap to configure",
+                onClick = { setupPrompt = SetupTarget.KeepAlive }
+            )
 
-                EndpointBoard(
-                    t = t,
-                    loopback = secured(loopbackUrl),
-                    lan = lanUrl,
-                    onCopyLoopback = { copy(context, secured(loopbackUrl), t.copied) },
-                    onCopyLan = { copy(context, secured(lanUrl), t.copied) },
-                    compact = compact,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(if (compact) 0.58f else 0.54f)
-                )
-            }
+            SectionTitle(if (t.zh) "连接地址" else "Connect")
+            // 连接地址卡
+            EndpointBoard(
+                t = t,
+                loopback = secured(loopbackUrl),
+                lan = lanUrl,
+                onCopyLoopback = { copy(context, secured(loopbackUrl), t.copied) },
+                onCopyLan = { copy(context, secured(lanUrl), t.copied) },
+            )
         }
     }
 
@@ -300,20 +298,20 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () 
     }
 }
 
-private data class ReadinessItem(val label: String, val value: String, val ok: Boolean, val onClick: () -> Unit)
-
 @Composable
-private fun PowerSurface(t: UiText, running: Boolean, port: Int, compact: Boolean, onPower: () -> Unit, modifier: Modifier = Modifier) {
+private fun StatusCard(t: UiText, running: Boolean, port: Int, onPower: () -> Unit, modifier: Modifier = Modifier) {
     val statusColor = if (running) statusSuccess() else MaterialTheme.colorScheme.primary
-    val shape = RoundedCornerShape(if (compact) 28.dp else 32.dp)
+    val shape = RoundedCornerShape(32.dp)
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.985f else 1f,
-        animationSpec = tween(durationMillis = 120),
+        targetValue = if (pressed) 0.975f else 1f,
+        animationSpec = tween(durationMillis = 140),
         label = "power-press"
     )
     val reduceMotion = LocalReduceMotion.current
+    // 呼吸脉冲：运行中状态点外圈扩散
+    val pulse by animateFloatAsState(if (running) 1f else 0f, label = "pulse")
     Box(
         modifier
             .graphicsLayer {
@@ -324,50 +322,56 @@ private fun PowerSurface(t: UiText, running: Boolean, port: Int, compact: Boolea
             .background(
                 Brush.verticalGradient(
                     listOf(
-                        statusColor.copy(alpha = if (running) 0.20f else 0.16f),
-                        statusColor.copy(alpha = if (running) 0.08f else 0.05f),
-                        MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+                        statusColor.copy(alpha = if (running) 0.24f else 0.16f),
+                        statusColor.copy(alpha = if (running) 0.10f else 0.06f),
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
                     )
                 )
             )
             .border(
-                BorderStroke(1.dp, statusColor.copy(alpha = if (running) 0.34f else 0.22f)),
+                BorderStroke(1.5.dp, statusColor.copy(alpha = if (running) 0.40f else 0.24f)),
                 shape
             )
             .clickable(interactionSource = interaction, indication = null, onClick = onPower)
-            .padding(
-                horizontal = if (compact) 18.dp else 22.dp,
-                vertical = if (compact) 16.dp else 20.dp
-            ),
-        contentAlignment = Alignment.Center
+            .padding(horizontal = 20.dp, vertical = 22.dp)
     ) {
-        Column(
+        Row(
             Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 14.dp)
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(18.dp)
         ) {
+            // 左侧：状态图标（呼吸圈）
             Box(
                 Modifier
-                    .size(if (compact) 64.dp else 76.dp)
+                    .size(72.dp)
                     .clip(CircleShape)
-                    .background(statusColor.copy(alpha = 0.16f))
-                    .border(BorderStroke(1.5.dp, statusColor.copy(alpha = 0.42f)), CircleShape),
+                    .background(statusColor.copy(alpha = 0.14f))
+                    .border(BorderStroke(1.5.dp, statusColor.copy(alpha = 0.44f)), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
+                if (running) {
+                    Box(
+                        Modifier
+                            .size(72.dp)
+                            .clip(CircleShape)
+                            .background(statusColor.copy(alpha = 0.10f + 0.14f * pulse))
+                    )
+                }
                 Icon(
                     if (running) Icons.Default.Stop else Icons.Default.PlayArrow,
                     contentDescription = t.power,
                     tint = statusColor,
-                    modifier = Modifier.size(if (compact) 30.dp else 34.dp)
+                    modifier = Modifier.size(32.dp)
                 )
             }
+            // 中间：状态文字
             Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
+                Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
                     if (running) (if (t.zh) "运行中" else "Running") else (if (t.zh) "已停止" else "Stopped"),
-                    style = if (compact) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.headlineLarge,
+                    style = MaterialTheme.typography.headlineLarge,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
                     letterSpacing = (-0.8).sp
@@ -383,78 +387,76 @@ private fun PowerSurface(t: UiText, running: Boolean, port: Int, compact: Boolea
                     fontWeight = FontWeight.Medium
                 )
             }
+            // 右侧：大号按钮
+            Surface(
+                shape = CircleShape,
+                color = statusColor,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                onClick = onPower
+            ) {
+                Text(
+                    if (running) (if (t.zh) "停止" else "Stop") else (if (t.zh) "启动" else "Start"),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp)
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ReadinessStrip(items: List<ReadinessItem>, modifier: Modifier = Modifier) {
-    val shape = RoundedCornerShape(20.dp)
+private fun StatusRow(label: String, value: String, ok: Boolean, hint: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val color = if (ok) statusSuccess() else MaterialTheme.colorScheme.error
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val alpha by animateFloatAsState(if (pressed) 0.08f else 0f, label = "ready-press")
     Row(
         modifier
-            .clip(shape)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
             .border(
                 BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
-                shape
+                RoundedCornerShape(20.dp)
             )
-            .height(if (items.any { it.value.length > 8 }) 74.dp else 68.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .background(color.copy(alpha = alpha))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        items.forEachIndexed { index, item ->
-            if (index > 0) {
-                Box(
-                    Modifier
-                        .width(1.dp)
-                        .fillMaxHeight()
-                        .padding(vertical = 14.dp)
-                        .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
-                )
-            }
-            ReadinessCell(
-                item = item,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
+        Box(
+            Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                hint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
             )
         }
-    }
-}
-
-@Composable
-private fun ReadinessCell(item: ReadinessItem, modifier: Modifier = Modifier) {
-    val color = if (item.ok) statusSuccess() else MaterialTheme.colorScheme.error
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val alpha by animateFloatAsState(if (pressed) 0.10f else 0f, label = "ready-press")
-    Column(
-        modifier
-            .background(color.copy(alpha = alpha))
-            .clickable(interactionSource = interaction, indication = null, onClick = item.onClick)
-            .padding(horizontal = 8.dp, vertical = 10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            item.label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Spacer(Modifier.height(4.dp))
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            Box(Modifier.size(7.dp).clip(CircleShape).background(color))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                item.value,
-                style = MaterialTheme.typography.labelLarge,
+                value,
+                style = MaterialTheme.typography.titleSmall,
                 color = color,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                fontWeight = FontWeight.Bold
+            )
+            Icon(
+                Icons.Default.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.size(18.dp)
             )
         }
     }
@@ -467,42 +469,34 @@ private fun EndpointBoard(
     lan: String,
     onCopyLoopback: () -> Unit,
     onCopyLan: () -> Unit,
-    compact: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val shape = RoundedCornerShape(if (compact) 22.dp else 26.dp)
-    Column(
-        modifier
-            .clip(shape)
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
-            .border(
-                BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
-                shape
+    ModernCardBare(modifier = modifier) {
+        Row(
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                if (t.zh) "连接地址" else "Connect",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
             )
-            .padding(if (compact) 12.dp else 14.dp)
-    ) {
-        Text(
-            if (t.zh) "连接" else "Connect",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-        )
-        Spacer(Modifier.height(if (compact) 6.dp else 8.dp))
-        EndpointCell(
+            StatusDot(ok = loopback.isNotBlank())
+        }
+        Spacer(Modifier.height(12.dp))
+        EndpointRow(
             label = if (t.zh) "本机回环" else "Loopback",
             value = loopback,
-            enabled = true,
+            copyLabel = if (t.zh) "复制" else "Copy",
             onCopy = onCopyLoopback,
-            modifier = Modifier.weight(1f)
         )
-        EndpointDivider()
-        EndpointCell(
+        Spacer(Modifier.height(4.dp))
+        EndpointRow(
             label = if (t.zh) "局域网" else "LAN",
-            value = lan.ifBlank { if (t.zh) "暂无可用局域网地址" else "No LAN address" },
-            enabled = lan.isNotBlank(),
+            value = lan.ifBlank { if (t.zh) "暂无可用地址" else "No LAN address" },
+            copyLabel = if (t.zh) "复制" else "Copy",
             onCopy = onCopyLan,
-            modifier = Modifier.weight(1f)
+            enabled = lan.isNotBlank()
         )
     }
 }
@@ -519,105 +513,32 @@ private fun EndpointDivider() {
 }
 
 @Composable
-private fun EndpointCell(
-    label: String,
-    value: String,
-    enabled: Boolean,
-    onCopy: () -> Unit,
-    modifier: Modifier = Modifier,
-    onUnavailableClick: (() -> Unit)? = null
-) {
-    val interaction = remember { MutableInteractionSource() }
+private fun EndpointRow(label: String, value: String, copyLabel: String, onCopy: () -> Unit, enabled: Boolean = true, modifier: Modifier = Modifier) {
     Row(
         modifier
             .fillMaxWidth()
-            .then(
-                if (!enabled && onUnavailableClick != null) {
-                    Modifier.clickable(
-                        interactionSource = interaction,
-                        indication = null,
-                        onClick = onUnavailableClick
-                    )
-                } else {
-                    Modifier
-                }
-            )
-            .padding(horizontal = 4.dp, vertical = 8.dp),
+            .padding(horizontal = 2.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
-            Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(
                 label,
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.Medium
             )
-            Text(
+            MonoText(
                 value,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                maxLines = 1
             )
         }
-        val chipShape = RoundedCornerShape(12.dp)
-        Box(
-            Modifier
-                .clip(chipShape)
-                .background(
-                    if (enabled) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                    }
-                )
-                .then(
-                    if (enabled) {
-                        Modifier.clickable(onClick = onCopy)
-                    } else if (onUnavailableClick !=
-                        null
-                    ) {
-                        Modifier.clickable(onClick = onUnavailableClick)
-                    } else {
-                        Modifier
-                    }
-                )
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            if (enabled) {
-                Icon(
-                    Icons.Default.ContentCopy,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp)
-                )
-            } else {
-                Text(
-                    if (onUnavailableClick != null) "→" else "—",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
+        if (enabled) {
+            CopyChip(copyLabel, onClick = onCopy)
         }
     }
-}
-
-@Composable
-private fun AddressRow(label: String, value: String, copyEnabled: Boolean, onCopy: () -> Unit, onUnavailableClick: (() -> Unit)? = null) {
-    EndpointCell(
-        label = label,
-        value = value,
-        enabled = copyEnabled,
-        onCopy = onCopy,
-        onUnavailableClick = onUnavailableClick
-    )
 }
 
 @Composable

@@ -11,6 +11,8 @@ import androidx.compose.ui.unit.sp
 
 internal object AppPalette {
     val blue = Color(0xFF0A84FF)
+    val brand = Color(0xFF6C8CFF)
+    val brandDeep = Color(0xFF4F6BFF)
     val teal = Color(0xFF64D2FF)
     val indigo = Color(0xFF5E5CE6)
     val purple = Color(0xFFBF5AF2)
@@ -27,6 +29,7 @@ internal object AppPalette {
         "orange" -> if (dark) Color(0xFFFF9F0A) else Color(0xFFEA580C)
         "red" -> if (dark) Color(0xFFFF453A) else Color(0xFFDC2626)
         "mono" -> if (dark) Color(0xFFD1D1D6) else Color(0xFF3A3A3C)
+        "brand" -> if (dark) Color(0xFF6C8CFF) else Color(0xFF4F6BFF)
         else -> if (dark) Color(0xFF0A84FF) else Color(0xFF007AFF)
     }
 }
@@ -212,10 +215,22 @@ internal object AppleColors {
         val success = AppPalette.green
         val error = AppPalette.red
         val warning = AppPalette.orange
-        val glass = Color(0xFF1C1C1E)
-        val glassStrong = Color(0xFF1C1C1E)
-        val glassStroke = Color(0x33FFFFFF)
+        val glass = Color(0x1A2340)
+        val glassStrong = Color(0x2A3560)
+        val glassStroke = Color(0x2AFFFFFF)
     }
+}
+
+/** 「暗夜法医」玻璃拟态 token（深色） */
+internal object Glass {
+    val card = Color(0x1A2340)          // 玻璃卡片底色（半透明深蓝）
+    val cardStrong = Color(0x2A3560)    // 强调玻璃
+    val stroke = Color(0x2AFFFFFF)      // 玻璃描边
+    val strokeStrong = Color(0x4AFFFFFF)
+    val glow = Color(0xFF6C8CFF)        // 光晕主色
+    val glowSoft = Color(0x336C8CFF)
+    val bg = Color(0xFF070A14)          // 页面背景（近黑蓝）
+    val bgDeep = Color(0xFF04060D)      // 更深背景
 }
 
 internal fun appleLightColors() = appLightColors(AppPalette.blue, false)

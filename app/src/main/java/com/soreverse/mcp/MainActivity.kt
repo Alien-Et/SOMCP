@@ -496,59 +496,25 @@ private fun FloatingDock(tab: MainTab, t: UiText, onTab: (MainTab) -> Unit) {
         Triple(MainTab.Logs, Icons.Default.Terminal, t.logs),
         Triple(MainTab.Settings, Icons.Default.Settings, t.settings)
     )
-    val dockShape = RoundedCornerShape(28.dp)
     Box(
         Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 10.dp),
+            .padding(horizontal = 24.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
-            Modifier
-                .fillMaxWidth()
-                .clip(dockShape)
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
-                .border(
-                    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)),
-                    dockShape
-                )
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             items.forEach { (value, icon, label) ->
-                val selected = tab == value
-                val bg by animateFloatAsState(
-                    targetValue = if (selected) 1f else 0f,
-                    animationSpec = tween(durationMillis = 160),
-                    label = "dock-sel"
+                CapsuleTab(
+                    icon = icon,
+                    label = label,
+                    selected = tab == value,
+                    onClick = { onTab(value) }
                 )
-                Column(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f * bg))
-                        .clickable { onTab(value) }
-                        .padding(horizontal = 4.dp, vertical = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    Icon(
-                        icon,
-                        contentDescription = label,
-                        tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Text(
-                        label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-                    )
-                }
             }
         }
     }
