@@ -19,6 +19,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,8 +28,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CloudUpload
@@ -53,6 +56,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,6 +85,64 @@ private fun settingsTitle(t: UiText, dest: SettingsDest): String = when (dest) {
     SettingsDest.ToolStats -> if (t.zh) "工具调用审计" else "Tool Call Audit"
     SettingsDest.Disclaimer -> t.disclaimer
     SettingsDest.BackupRestore -> t.backupRestore
+}
+
+/** M3 列表分组容器 */
+@Composable
+private fun SettingsListGroup(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Glass.card)
+            .border(1.dp, Glass.stroke, RoundedCornerShape(20.dp))
+            .padding(horizontal = 4.dp, vertical = 4.dp)
+    ) {
+        content()
+    }
+}
+
+/** M3 列表行（图标 + 标题 + 副标题 + 箭头） */
+@Composable
+private fun SettingsListRow(title: String, subtitle: String, icon: ImageVector, tint: Color, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Box(
+            Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(tint.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+            )
+        }
+        Icon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+            modifier = Modifier.size(20.dp)
+        )
+    }
 }
 
 @Composable
@@ -123,10 +186,10 @@ private fun SettingsTile(title: String, subtitle: String, icon: ImageVector, tin
 private fun SectionTitle(text: String) {
     Text(
         text,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
         fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+        modifier = Modifier.padding(top = 16.dp, bottom = 6.dp, start = 4.dp)
     )
 }
 
@@ -188,103 +251,93 @@ internal fun SettingsHub(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // 分组标题
+                // 分组标题（M3 SectionHeader 风格）
                 SectionTitle(if (t.zh) "常用" else "Essentials")
-                TileGrid {
-                    SettingsTile(
+                SettingsListGroup {
+                    SettingsListRow(
                         if (t.zh) "服务配置" else "Service",
                         if (t.zh) "端口 / 地址 / 工具" else "Port / URLs / tools",
                         Icons.Default.Settings,
                         MaterialTheme.colorScheme.primary,
-                        { onDest(SettingsDest.ServiceConfig) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.ServiceConfig) }
                     )
-                    SettingsTile(
+                    SettingsListRow(
                         if (t.zh) "保活" else "Keep-alive",
                         if (t.zh) "唤醒锁 / 自启" else "Wake lock / boot",
                         Icons.Default.PowerSettingsNew,
                         AppPalette.green,
-                        { onDest(SettingsDest.KeepAlive) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.KeepAlive) }
                     )
-                    SettingsTile(
+                    SettingsListRow(
                         if (t.zh) "访问" else "Access",
                         if (t.zh) "免 key / 认证" else "No key / auth",
                         Icons.Default.Lock,
                         AppPalette.orange,
-                        { onDest(SettingsDest.Access) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.Access) }
                     )
-                    SettingsTile(
+                    SettingsListRow(
                         if (t.zh) "语言" else "Language",
                         if (t.zh) "界面语言" else "Interface language",
                         Icons.Default.Info,
                         AppPalette.indigo,
-                        { onDest(SettingsDest.Language) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.Language) }
                     )
                 }
 
                 SectionTitle(if (t.zh) "工具" else "Tools")
-                TileGrid {
-                    SettingsTile(
+                SettingsListGroup {
+                    SettingsListRow(
                         if (t.zh) "审计" else "Audit",
                         if (t.zh) "编辑校验" else "Edit checks",
                         Icons.Default.EditNote,
                         AppPalette.purple,
-                        { onDest(SettingsDest.Audit) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.Audit) }
                     )
-                    SettingsTile(
+                    SettingsListRow(
                         "Blutter",
                         if (t.zh) "Flutter 分析" else "Flutter analysis",
                         Icons.Default.Memory,
                         AppPalette.indigo,
-                        { onDest(SettingsDest.Blutter) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.Blutter) }
                     )
-                    SettingsTile(
+                    SettingsListRow(
                         if (t.zh) "探测" else "Probe",
                         if (t.zh) "环境探测" else "Environment probe",
                         Icons.Default.BugReport,
                         AppPalette.green,
-                        { onDest(SettingsDest.Probe) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.Probe) }
                     )
-                    SettingsTile(
+                    SettingsListRow(
                         if (t.zh) "调用审计" else "Tool stats",
                         if (t.zh) "工具调用统计" else "Tool call stats",
                         Icons.Default.Analytics,
                         AppPalette.teal,
-                        { onDest(SettingsDest.ToolStats) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.ToolStats) }
                     )
                 }
 
                 SectionTitle(if (t.zh) "其他" else "Other")
-                TileGrid {
-                    SettingsTile(
+                SettingsListGroup {
+                    SettingsListRow(
                         if (t.zh) "日志" else "Logs",
                         if (t.zh) "运行日志" else "Runtime logs",
                         Icons.Default.Info,
                         AppPalette.teal,
-                        { onDest(SettingsDest.Logs) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.Logs) }
                     )
-                    SettingsTile(
+                    SettingsListRow(
                         if (t.zh) "导出" else "Export",
                         if (t.zh) "导出产物" else "Export artifacts",
                         Icons.Default.FileDownload,
                         AppPalette.orange,
-                        { onDest(SettingsDest.Export) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.Export) }
                     )
-                    SettingsTile(
+                    SettingsListRow(
                         if (t.zh) "备份恢复" else "Backup",
                         if (t.zh) "备份 / 还原" else "Backup / restore",
                         Icons.Default.CloudUpload,
                         AppPalette.indigo,
-                        { onDest(SettingsDest.BackupRestore) },
-                        modifier = Modifier.weight(1f)
+                        { onDest(SettingsDest.BackupRestore) }
                     )
                 }
                 // License footer

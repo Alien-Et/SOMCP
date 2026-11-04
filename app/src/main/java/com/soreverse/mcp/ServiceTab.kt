@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PlayArrow
@@ -70,7 +71,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 @Composable
-internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () -> Unit) {
+internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () -> Unit, onOpenSettings: () -> Unit) {
     val context = LocalContext.current
     var port by remember { mutableStateOf(settings.port.toString()) }
     var running by remember { mutableStateOf(McpForegroundService.isRunning()) }
@@ -180,8 +181,13 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () 
             title = if (t.zh) "控制台" else "Console",
             subtitle = if (t.zh) "本地 MCP 服务" else "Local MCP service",
             trailing = {
-                TextButton(onClick = { showToolCatalog = true }) {
-                    Text(if (t.zh) "工具列表" else "Tools", color = MaterialTheme.colorScheme.primary)
+                IconButton(onClick = onOpenSettings) {
+                    Icon(
+                        Icons.Default.Settings,
+                        contentDescription = if (t.zh) "设置" else "Settings",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
             }
         )

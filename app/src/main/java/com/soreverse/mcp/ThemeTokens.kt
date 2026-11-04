@@ -144,15 +144,15 @@ internal fun appDarkColors(accent: Color, pureBlack: Boolean, highContrast: Bool
     onSecondaryContainer = Color(0xFFF5F5F7),
     tertiary = Color(0xFF5E5CE6),
     onTertiary = Color.White,
-    background = if (pureBlack) Color(0xFF000000) else Color(0xFF0B0B0D),
+    background = if (pureBlack) Color(0xFF000000) else Color(0xFF121318),
     onBackground = if (highContrast) Color(0xFFFFFFFF) else Color(0xFFF5F5F7),
-    surface = if (pureBlack) Color(0xFF1C1C1E) else Color(0xFF161618),
+    surface = if (pureBlack) Color(0xFF1C1C1E) else Color(0xFF1C1D21),
     onSurface = if (highContrast) Color(0xFFFFFFFF) else Color(0xFFF5F5F7),
-    surfaceVariant = Color(0xFF2C2C2E),
+    surfaceVariant = Color(0xFF2A2C33),
     onSurfaceVariant = if (highContrast) Color(0xFFD1D1D6) else Color(0xFF8E8E93),
-    surfaceContainer = if (pureBlack) Color(0xFF1C1C1E) else Color(0xFF161618),
-    surfaceContainerHigh = Color(0xFF2C2C2E),
-    surfaceContainerHighest = Color(0xFF3A3A3C),
+    surfaceContainer = if (pureBlack) Color(0xFF1C1C1E) else Color(0xFF1C1D21),
+    surfaceContainerHigh = Color(0xFF2A2C33),
+    surfaceContainerHighest = Color(0xFF36383E),
     outline = if (highContrast) Color(0xFFAEAEB2) else Color(0xFF3A3A3C),
     outlineVariant = Color(0xFF2C2C2E),
     error = Color(0xFFFF453A),
@@ -221,16 +221,16 @@ internal object AppleColors {
     }
 }
 
-/** 「暗夜法医」玻璃拟态 token（深色） */
+/** M3 标准深色配色 token（Google Material 3 dark） */
 internal object Glass {
-    val card = Color(0x1A2340)          // 玻璃卡片底色（半透明深蓝）
-    val cardStrong = Color(0x2A3560)    // 强调玻璃
-    val stroke = Color(0x2AFFFFFF)      // 玻璃描边
-    val strokeStrong = Color(0x4AFFFFFF)
-    val glow = Color(0xFF6C8CFF)        // 光晕主色
-    val glowSoft = Color(0x336C8CFF)
-    val bg = Color(0xFF070A14)          // 页面背景（近黑蓝）
-    val bgDeep = Color(0xFF04060D)      // 更深背景
+    val card = Color(0xFF2A2C33)        // surfaceVariant（M3 卡片）
+    val cardStrong = Color(0xFF36383E)  // surfaceContainerHigh（导航条）
+    val stroke = Color(0xFF3A3C41)      // outlineVariant（细描边）
+    val strokeStrong = Color(0xFF4A4D55)
+    val glow = Color(0xFF8AB4F8)        // M3 主色蓝
+    val glowSoft = Color(0xFF8AB4F8)
+    val bg = Color(0xFF121318)          // M3 深色背景
+    val bgDeep = Color(0xFF0E0F13)      // 更深背景（日志面板）
 }
 
 internal fun appleLightColors() = appLightColors(AppPalette.blue, false)

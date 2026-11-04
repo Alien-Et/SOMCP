@@ -331,20 +331,6 @@ private fun SoReverseApp() {
                 Scaffold(
                     containerColor = Color.Transparent,
                     contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                    bottomBar = {
-                        if (!inInternalDetail) {
-                            FloatingDock(
-                                tab = tab,
-                                t = t,
-                                onTab = {
-                                    if (it != tab) {
-                                        tab = it
-                                        if (it != MainTab.Settings) settingsDest = SettingsDest.Root
-                                    }
-                                }
-                            )
-                        }
-                    }
                 ) { padding ->
                     Box(
                         Modifier
@@ -384,6 +370,10 @@ private fun SoReverseApp() {
                                     onOpenKeepAlive = {
                                         tab = MainTab.Settings
                                         settingsDest = SettingsDest.KeepAlive
+                                    },
+                                    onOpenSettings = {
+                                        tab = MainTab.Settings
+                                        settingsDest = SettingsDest.Root
                                     },
                                 )
 
