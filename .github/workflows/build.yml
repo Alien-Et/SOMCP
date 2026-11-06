@@ -2,11 +2,6 @@ name: Build & Sign APK
 
 on:
   workflow_dispatch:
-    inputs:
-      go_proxy:
-        description: 'GOPROXY for the cloudflared cross-compile (set https://goproxy.cn,direct on CN-network / restricted runners)'
-        required: false
-        default: 'https://proxy.golang.org,direct'
 
 # Pushes to main are serialized; a newer push supersedes an in-flight build so
 # the artifact always corresponds to the branch tip, not a stale queue entry.
@@ -160,75 +155,6 @@ jobs:
             }
           done
           echo "libcore_ghidra.so present for all four ABIs."
-
-      - name: Set up Go for cloudflared cross-compile
-        # v7 runs on the Node 24 runtime and clears the `punycode` (DEP0040)
-        # deprecation warning that v5 emitted on the Node 24 runner.
-        # NOTE: exactly one `uses:` per step. A stray leftover `uses:` line makes
-        # the key a duplicate, the whole workflow file unparseable, and every run
-        # dies at startup with 0 jobs (the run is then labelled with the file
-        # path instead of the workflow name).
-        uses: actions/setup-go@v7
-        with:
-          go-version: 'stable'
-          cache: false
-
-      # The app no longer downloads cloudflared at runtime; it must be bundled
-      # into jniLibs or the Cloudflare tunnel feature is dead on a fresh install.
-      # Two network dependencies live here (the GitHub clone and the Go module
-      # downloads). The clone is retried; module downloads go through the
-      # configurable GOPROXY (workflow_dispatch input, default proxy.golang.org;
-      # pass https://goproxy.cn,direct on runners behind CN networks). The
-      # step-level timeout keeps a wedged fetch from occupying the runner.
-      - name: Cross-compile cloudflared for Android (arm64-v8a / armeabi-v7a / x86 / x86_64)
-        timeout-minutes: 20
-        env:
-          GOPROXY: ${{ github.event.inputs.go_proxy || 'https://proxy.golang.org,direct' }}
-        run: |
-          set -euo pipefail
-          CLOUDFLARED_TAG="2026.8.3"
-          for attempt in 1 2 3; do
-            if git clone --depth 1 --branch "$CLOUDFLARED_TAG" \
-              https://github.com/cloudflare/cloudflared.git cloudflared-src; then
-              break
-            fi
-            rm -rf cloudflared-src
-            if [ "$attempt" -ge 3 ]; then
-              echo "::error::git clone cloudflared ($CLOUDFLARED_TAG) failed after 3 attempts (network unreachable from this runner; configure a proxy/mirror or pre-populate cloudflared-src)"
-              exit 1
-            fi
-            echo "cloudflared clone attempt $attempt failed; retrying in 15s"
-            sleep 15
-          done
-          (
-            cd cloudflared-src
-            GOOS=android GOARCH=arm64 CGO_ENABLED=0 \
-              go build -trimpath -ldflags="-s -w" \
-              -o ../libcloudflared-arm64-v8a ./cmd/cloudflared
-            GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 \
-              go build -trimpath -ldflags="-s -w" \
-              -o ../libcloudflared-armeabi-v7a ./cmd/cloudflared
-            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-              go build -trimpath -ldflags="-s -w" \
-              -o ../libcloudflared-x86_64 ./cmd/cloudflared
-            GOOS=linux GOARCH=386 CGO_ENABLED=0 \
-              go build -trimpath -ldflags="-s -w" \
-              -o ../libcloudflared-x86 ./cmd/cloudflared
-          )
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-            mkdir -p "app/src/main/jniLibs/$abi"
-          done
-          cp libcloudflared-arm64-v8a app/src/main/jniLibs/arm64-v8a/libcloudflared.so
-          cp libcloudflared-armeabi-v7a app/src/main/jniLibs/armeabi-v7a/libcloudflared.so
-          cp libcloudflared-x86_64 app/src/main/jniLibs/x86_64/libcloudflared.so
-          cp libcloudflared-x86 app/src/main/jniLibs/x86/libcloudflared.so
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-            test -f "app/src/main/jniLibs/$abi/libcloudflared.so" || {
-              echo "::error::missing app/src/main/jniLibs/$abi/libcloudflared.so after cloudflared cross-compile"
-              exit 1
-            }
-          done
-          echo "cloudflared cross-compiled and bundled into jniLibs."
 
       # Signing secrets use the same names as the Release workflow
       # (KEYSTORE/ALIAS/ALIAS_PASSWORD/PASSWORD). The old STORE_FILE/... names

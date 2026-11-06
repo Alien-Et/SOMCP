@@ -79,18 +79,10 @@ class McpForegroundService : Service() {
                 // intent, BEFORE stopSelf() schedules onDestroy(). The window
                 // between stopSelf() and onDestroy() used to be tens of
                 // milliseconds during which `running` was still true and
-                // stopRequested was still false, so an in-flight keepalive
-                // health probe that failed in that window would re-enter
-                // tunnel.start() and spawn a fresh cloudflared child against
-                // a Service Context that was mid-teardown — a race that
-                // showed up as the app process getting killed when the user
-                // toggled the MCP master switch off. Setting running=false
-                // AND calling CloudflareTunnelManager.requestStop() here
-                // synchronously mirrors what onDestroy() does on both gates,
-                // so the two paths form a redundant gate and the window
-                // collapses to zero.
+                // Flip running=false synchronously so any in-flight
+                // keepalive thread sees the guard as false and exits,
+                // preventing races during service teardown.
                 running = false
-                runCatching { server?.tunnel?.requestStop() }
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -106,26 +98,14 @@ class McpForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        // Unregister the reconnect Receiver BEFORE calling tunnel.stop() so
-        // the STOPPED broadcast that stop() emits cannot spawn a reconnect
-        // sub-thread that re-enters tunnel.start() against a dying Service
-        // Context.
-        unregisterTunnelReconnect()
-        // Flip running=false synchronously so any in-flight reconnect
-        // thread spawned moments before unregisterTunnelReconnect() sees the
-        // guard as false and exits without re-entering tunnel.start().
+        // Flip running=false synchronously so any in-flight thread
+        // sees the guard as false and exits cleanly during teardown.
         running = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         val sv = server
         server = null
         currentServer = null
-        runCatching { sv?.tunnel?.requestStop() }
         Thread({
-            try {
-                sv?.tunnel?.stop()
-            } catch (e: Throwable) {
-                AppLog.e("tunnel.stop() failed during destroy", e)
-            }
             try {
                 sv?.stop()
             } catch (e: Throwable) {
@@ -141,7 +121,6 @@ class McpForegroundService : Service() {
     override fun onTimeout(startId: Int, fgsType: Int) {
         AppLog.w("Foreground service timeout: startId=$startId type=$fgsType")
         running = false
-        runCatching { server?.tunnel?.requestStop() }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf(startId)
     }
@@ -221,13 +200,6 @@ class McpForegroundService : Service() {
         false
     }
 
-
-    private var reconnectReceiver: android.content.BroadcastReceiver? = null
-
-    private fun unregisterTunnelReconnect() {
-        reconnectReceiver?.let { runCatching { unregisterReceiver(it) } }
-        reconnectReceiver = null
-    }
 
     private fun updateWakeLock(enabled: Boolean) {
         if (!enabled) {

@@ -41,7 +41,7 @@ object ToolCatalogPresentation {
                 ),
         "session" to (if (zh) "编辑会话：打开、历史管理、审计" else "Edit session: open, history, audit"),
         "build" to (if (zh) "构建：输出补丁后的 SO 文件" else "Build: export patched SO file"),
-        "system" to (if (zh) "系统控制：隧道、APK MCP 桥" else "System: tunnel, APK MCP bridge"),
+        "system" to (if (zh) "系统控制：APK MCP 桥" else "System: APK MCP bridge"),
         "meta" to
             (if (zh) "元信息：帮助、工具列表、统计、批量、分页" else "Meta: help, tool list, stats, batch, pagination")
     )

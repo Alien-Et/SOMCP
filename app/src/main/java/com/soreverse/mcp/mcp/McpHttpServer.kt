@@ -21,7 +21,6 @@ import android.content.Context
 import com.soreverse.mcp.BuildConfig
 import com.soreverse.mcp.core.ApkMcpBridge
 import com.soreverse.mcp.core.AppLog
-import com.soreverse.mcp.core.CloudflareTunnelManager
 import com.soreverse.mcp.core.EngineProvider
 import com.soreverse.mcp.core.SelfArtifactGuard
 import com.soreverse.mcp.core.SettingsStore
@@ -109,9 +108,6 @@ class McpHttpServer(private val context: Context, private val port: Int, private
     val apkBridge: ApkMcpBridge get() = bridgeHolder
         ?: ApkMcpBridge(SettingsStore(context)).also { bridgeHolder = it }
     private var bridgeHolder: ApkMcpBridge? = null
-    val tunnel: CloudflareTunnelManager get() = tunnelHolder
-        ?: CloudflareTunnelManager(context, SettingsStore(context)).also { tunnelHolder = it }
-    private var tunnelHolder: CloudflareTunnelManager? = null
 
     // 【魔改】APK MCP 桥接已移除
     fun ensureBridgeProbed() { }
@@ -623,17 +619,6 @@ class McpHttpServer(private val context: Context, private val port: Int, private
             batchHook = { batchArgs -> batchTool(batchArgs) },
             continueHook = { cursor -> native.continuePage(cursor) },
             sysStatusHook = { probe -> sysStatus(probe) },
-            tunnelStatusHook = { ok(tunnel.snapshotJson()) },
-            tunnelStatsHook = { reset ->
-                if (reset) tunnel.resetTunnelStats()
-                ok(tunnel.tunnelStats)
-            },
-            tunnelStartHook = { _, _, _, _ ->
-                err("TUNNEL_REMOVED", "Cloudflare tunnel has been removed in this build")
-            },
-            tunnelStopHook = {
-                ok(JSONObject().put("stopped", false))
-            },
             apkStatusHook = { probe ->
                 if (probe) apkBridge.probe()
                 ok(apkBridge.snapshotJson())
@@ -718,13 +703,13 @@ class McpHttpServer(private val context: Context, private val port: Int, private
      * the LAN, so "bound to the local network only" is defeated as soon as a
      * malicious page's hostname rebinds onto this device. Requests must present
      * a Host that is an IP literal, `localhost`, or this server's own active
-     * tunnel hostname; a browser-supplied Origin/Referer must agree with Host.
+     * this server's own hostname; a browser-supplied Origin/Referer must agree with Host.
      * Desktop MCP clients do not send Origin; browsers always do.
      */
     private fun ApplicationCall.hostTrusted(): Boolean {
         val hostname = hostHeaderName(request.header("Host").orEmpty()) ?: return false
         val localName = hostname == "localhost" || isIpLiteralHostname(hostname)
-        if (!localName && hostname !in tunnelPublicHosts()) return false
+        if (!localName) return false
         request.header("Origin")?.let { if (uriHostOrNull(it) != hostname) return false }
         request.header("Referer")?.let { if (uriHostOrNull(it) != hostname) return false }
         return true
@@ -738,7 +723,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                 "error",
                 JSONObject().put("code", "FORBIDDEN_ORIGIN").put(
                     "message",
-                    "Forbidden: Host/Origin is not localhost, a direct IP, or this server's tunnel hostname (DNS rebinding protection)."
+                    "Forbidden: Host/Origin is not localhost or a direct IP (DNS rebinding protection)."
                 )
             ).toString(),
             ContentType.Application.Json,
@@ -766,13 +751,6 @@ class McpHttpServer(private val context: Context, private val port: Int, private
     }
 
     private fun uriHostOrNull(raw: String): String? = runCatching { java.net.URI(raw).host?.lowercase() }.getOrNull()
-
-    private fun tunnelPublicHosts(): Set<String> {
-        val out = mutableSetOf<String>()
-        tunnel.status.publicUrl?.let { uriHostOrNull(it)?.let(out::add) }
-        uriHostOrNull(SettingsStore(context).tunnelNamedPublicUrl)?.let(out::add)
-        return out
-    }
 
     private fun constantTimeEquals(candidate: String, secret: String): Boolean = tokenConstantTimeEquals(candidate, secret)
 
@@ -856,7 +834,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
             .put("nativeBackends", nativeBackendStatus())
             .put(
                 "hint",
-                "Call meta_info (action=stats) for per-tool call counts and latency. Call system_control (action=status) to check SO+APK combo, tunnel state, and native backend status."
+                "Call meta_info (action=stats) for per-tool call counts and latency. Call system_control (action=status) to check SO+APK combo and native backend status."
             )
     )
 
@@ -924,7 +902,6 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                 .put("runtime", runtimeInfo())
                 .put("nativeBackends", nativeBackendStatus())
                 .put("apkMcp", snapshot)
-                .put("tunnel", tunnel.snapshotJson())
                 .put(
                     "integration",
                     JSONObject()
@@ -942,8 +919,6 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                         .put("apkMcpUrl", s.apkMcpUrl)
                         .put("hint", integrationHint)
                 )
-                .put("cloudflaredAvailable", tunnel.binary()?.exists() == true)
-                .put("cloudflaredBinaryState", tunnel.binaryState.name)
         )
     }
 
@@ -1210,19 +1185,6 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                             "name",
                             "section rebuild (xAnSo)"
                         ).put("steps", listOf("so_open", "edit_fix_sections", "analyze_elf"))
-                    )
-                    .put(
-                        JSONObject().put(
-                            "name",
-                            "public expose"
-                        ).put(
-                            "steps",
-                            listOf(
-                                "system_control (action=tunnel_start, mode=quick) — requires token authentication enabled",
-                                "read publicUrl from result",
-                                "client connects to publicUrl/mcp"
-                            )
-                        )
                     )
             )
             .put(

@@ -273,7 +273,7 @@ internal fun SettingsKeepAlivePage(t: UiText, settings: SettingsStore) {
             }
             GroupDivider()
             Text(
-                if (t.zh) "开机自启依赖系统允许自启动/后台启动，并与隧道自动启动相互独立。" else "Boot autostart depends on system permissions and is independent from tunnel auto-start.",
+                if (t.zh) "开机自启依赖系统允许自启动/后台启动。" else "Boot autostart depends on system permissions.",
                 modifier = Modifier.padding(14.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -374,12 +374,6 @@ internal fun SettingsAccessPage(t: UiText, settings: SettingsStore) {
         ) {
             Text(
                 when {
-                    settings.tunnelMode != "off" ->
-                        if (t.zh) {
-                            "Cloudflare 隧道已配置：公网访问必须启用 Token。"
-                        } else {
-                            "Cloudflare Tunnel is configured: public access requires a token."
-                        }
                     bindHost == "127.0.0.1" ->
                         if (t.zh) {
                             "仅本机：Token 可选，适合本机客户端或 adb forward。"

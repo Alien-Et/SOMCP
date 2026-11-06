@@ -498,128 +498,15 @@ class SettingsStore(context: Context) {
             if (value in setOf("stable", "beta")) value else "stable"
         ).apply()
 
-    // ---- Cloudflare Tunnel ----
-    var tunnelMode: String
-        get() = prefs.getString("tunnelMode", "off") ?: "off"
-        set(value) = prefs.edit().putString(
-            "tunnelMode",
-            if (value in
-                setOf("off", "quick", "named")
-            ) {
-                value
-            } else {
-                "off"
-            }
-        ).apply()
-
-    var tunnelAutoStart: Boolean
-        get() = prefs.getBoolean("tunnelAutoStart", false)
-        set(value) = prefs.edit().putBoolean("tunnelAutoStart", value).apply()
-
     /**
      * Independent gate for [com.soreverse.mcp.service.BootReceiver]: when true the foreground
-     * service is started after `BOOT_COMPLETED`. Until this existed, [BootReceiver] borrowed
-     * [tunnelAutoStart] as its only gate, which conflated two unrelated concepts — flipping
-     * "auto-start the tunnel with the service" on would also pull the entire MCP server up at
-     * every phone reboot, which surprised users who only meant to switch the tunnel on. This
-     * flag deliberately defaults to `false`.
+     * service is started after `BOOT_COMPLETED`. This flag deliberately defaults to `false`.
      */
     var bootAutoStart: Boolean
         get() = prefs.getBoolean("bootAutoStart", false)
         set(value) = prefs.edit().putBoolean("bootAutoStart", value).apply()
 
-    var tunnelTargetPort: Int
-        get() = prefs.getInt("tunnelTargetPort", 8000)
-        set(value) = prefs.edit().putInt("tunnelTargetPort", value.coerceIn(1, 65535)).apply()
 
-    var tunnelNamedToken: String
-        get() = prefs.getString("tunnelNamedToken", "") ?: ""
-        set(value) = prefs.edit().putString("tunnelNamedToken", value.trim()).apply()
-
-    var tunnelNamedPublicUrl: String
-        get() = prefs.getString("tunnelNamedPublicUrl", "") ?: ""
-        set(value) = prefs.edit().putString("tunnelNamedPublicUrl", value.trim()).apply()
-
-    var tunnelHistoryUrls: String
-        get() = prefs.getString("tunnelHistoryUrls", "") ?: ""
-        set(value) = prefs.edit().putString("tunnelHistoryUrls", value).apply()
-
-    var tunnelHistoryEnabled: Boolean
-        get() = prefs.getBoolean("tunnelHistoryEnabled", true)
-        set(value) = prefs.edit().putBoolean("tunnelHistoryEnabled", value).apply()
-
-    var tunnelProtocol: String
-        get() = prefs.getString("tunnelProtocol", "http2") ?: "http2"
-        set(value) = prefs.edit().putString(
-            "tunnelProtocol",
-            if (value in
-                setOf("http2", "quic", "auto")
-            ) {
-                value
-            } else {
-                "http2"
-            }
-        ).apply()
-
-    var tunnelEdgeIpVersion: String
-        get() = prefs.getString("tunnelEdgeIpVersion", "4") ?: "4"
-        set(value) = prefs.edit().putString(
-            "tunnelEdgeIpVersion",
-            if (value in
-                setOf("4", "6", "auto")
-            ) {
-                value
-            } else {
-                "4"
-            }
-        ).apply()
-
-    var tunnelReconnect: Boolean
-        get() = prefs.getBoolean("tunnelReconnect", true)
-        set(value) = prefs.edit().putBoolean("tunnelReconnect", value).apply()
-
-    /** Periodic liveness ping to keep the cloudflared process from being considered idle by the OS. */
-    var tunnelKeepAlive: Boolean
-        get() = prefs.getBoolean("tunnelKeepAlive", true)
-        set(value) = prefs.edit().putBoolean("tunnelKeepAlive", value).apply()
-
-    /**
-     * Seconds between cloudflared process liveness probes when [tunnelKeepAlive]
-     * is enabled. The earlier hard-coded value of 8s was too eager on devices
-     * with congested radio and false-triggered the restart path; defaulting
-     * to 15s gives the local socket probe more breathing room before a single
-     * flaky connect flips the tunnel into restart churn.
-     */
-    var tunnelKeepaliveIntervalSec: Int
-        get() = prefs.getInt("tunnelKeepaliveIntervalSec", 15)
-        set(
-        value
-        ) = prefs.edit().putInt("tunnelKeepaliveIntervalSec", value.coerceIn(5, 300)).apply()
-
-    /**
-     * Seconds to wait after a tunnel FAILED broadcast before attempting an
-     * auto reconnect. The previous hard-coded 3s was too short for the user
-     * toggling the MCP master switch off — the reconnect thread would start
-     * cloudflared again before onDestroy's tunnel.stop() had finished joining
-     * the watch thread, leading to the reported crash. Default 5s;
-     * increasing this gives the Service teardown a clear window.
-     */
-    var tunnelReconnectBackoffSec: Int
-        get() = prefs.getInt("tunnelReconnectBackoffSec", 5)
-        set(value) = prefs.edit().putInt("tunnelReconnectBackoffSec", value.coerceIn(1, 60)).apply()
-
-    var tunnelLogLevel: String
-        get() = prefs.getString("tunnelLogLevel", "info") ?: "info"
-        set(value) = prefs.edit().putString(
-            "tunnelLogLevel",
-            if (value in
-                setOf("debug", "info", "warn", "error", "fatal")
-            ) {
-                value
-            } else {
-                "info"
-            }
-        ).apply()
 
     // ---- APK MCP bridge ----
 
@@ -939,21 +826,6 @@ class SettingsStore(context: Context) {
                     .put("externalProbeUrl", externalProbeUrl)
             )
             .put(
-                "tunnel",
-                org.json.JSONObject()
-                    .put("tunnelMode", tunnelMode)
-                    .put("tunnelAutoStart", tunnelAutoStart)
-                    .put("tunnelTargetPort", tunnelTargetPort)
-                    .put("tunnelNamedToken", mask(tunnelNamedToken))
-                    .put("tunnelProtocol", tunnelProtocol)
-                    .put("tunnelEdgeIpVersion", tunnelEdgeIpVersion)
-                    .put("tunnelReconnect", tunnelReconnect)
-                    .put("tunnelKeepAlive", tunnelKeepAlive)
-                    .put("tunnelKeepaliveIntervalSec", tunnelKeepaliveIntervalSec)
-                    .put("tunnelReconnectBackoffSec", tunnelReconnectBackoffSec)
-                    .put("tunnelLogLevel", tunnelLogLevel)
-            )
-            .put(
                 "apkBridge",
                 org.json.JSONObject()
                     .put("apkMcpUrl", apkMcpUrl)
@@ -1123,23 +995,6 @@ class SettingsStore(context: Context) {
         applyStr(engine, "logLevel") { logLevel = it }
         applyStr(engine, "externalProbeUrl") { externalProbeUrl = it }
 
-        val tunnel = obj("tunnel") ?: patch
-        applyStr(tunnel, "tunnelMode") { tunnelMode = it }
-        applyBool(tunnel, "tunnelAutoStart") { tunnelAutoStart = it }
-        applyInt(tunnel, "tunnelTargetPort") { tunnelTargetPort = it }
-        if (allowSecrets &&
-            allowSecurityFields
-        ) {
-            applySecret(tunnel, "tunnelNamedToken") { tunnelNamedToken = it }
-        }
-        applyStr(tunnel, "tunnelProtocol") { tunnelProtocol = it }
-        applyStr(tunnel, "tunnelEdgeIpVersion") { tunnelEdgeIpVersion = it }
-        applyBool(tunnel, "tunnelReconnect") { tunnelReconnect = it }
-        applyBool(tunnel, "tunnelKeepAlive") { tunnelKeepAlive = it }
-        applyInt(tunnel, "tunnelKeepaliveIntervalSec") { tunnelKeepaliveIntervalSec = it }
-        applyInt(tunnel, "tunnelReconnectBackoffSec") { tunnelReconnectBackoffSec = it }
-        applyStr(tunnel, "tunnelLogLevel") { tunnelLogLevel = it }
-
         val apk = obj("apkBridge") ?: patch
         applyStr(apk, "apkMcpUrl") { apkMcpUrl = it }
         if (allowSecrets) applySecret(apk, "apkMcpToken") { apkMcpToken = it }
@@ -1212,7 +1067,6 @@ class SettingsStore(context: Context) {
             "floatingEdgeHide",
             "wakeLockEnabled", "bootAutoStart", "defaultLimit", "stringLimit", "disasmLimit",
             "disasmMaxBytes", "emulationEnabled", "leanTools", "adaptiveLeanTools", "logLevel",
-            "tunnelMode", "tunnelAutoStart", "tunnelTargetPort", "tunnelNamedToken", "tunnelProtocol",
             "apkMcpUrl", "apkMcpToken", "apkMcpAutoProbe", "apkMcpMergeTools", "disabledTools",
             "maxConcurrentTools", "requestTimeoutMs", "toolResultMaxChars", "toolCallRateLimitPerMin",
             "crashReportEnabled", "crashReportEndpoint", "crashReportConsentAnswered"
@@ -1354,32 +1208,6 @@ class SettingsStore(context: Context) {
 
                 "logLevel" -> {
                     logLevel = patch.optString(key)
-                    touch(key)
-                }
-
-                "tunnelMode" -> {
-                    tunnelMode = patch.optString(key)
-                    touch(key)
-                }
-
-                "tunnelAutoStart" -> {
-                    tunnelAutoStart = patch.optBoolean(key)
-                    touch(key)
-                }
-
-                "tunnelTargetPort" -> {
-                    tunnelTargetPort = patch.optInt(key)
-                    touch(key)
-                }
-
-                "tunnelNamedToken" -> if (allowSecrets &&
-                    allowSecurityFields
-                ) {
-                    applySecret(patch, key) { tunnelNamedToken = it }
-                }
-
-                "tunnelProtocol" -> {
-                    tunnelProtocol = patch.optString(key)
                     touch(key)
                 }
 

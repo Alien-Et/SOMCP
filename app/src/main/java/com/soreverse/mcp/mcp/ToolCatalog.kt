@@ -2310,28 +2310,20 @@ object ToolCatalog {
     private val systemControl = object : ToolHandler {
         override val meta = ToolMeta(
             "system_control",
-            "系统控制（tunnel/apk_mcp/status）",
-            "System control: tunnel start/stop/status, APK MCP bridge status/probe/ping, overall system status.",
+            "系统控制（apk_mcp/status）",
+            "System control: APK MCP bridge status/probe/ping, overall system status.",
             "system",
             ToolClass.META
         ) {
             objectSchema(
                 props {
                     "action".oneOf(
-                        "status | tunnel_start | tunnel_stop | tunnel_status | tunnel_stats | apk_status | apk_probe | apk_ping",
+                        "status | apk_status | apk_probe | apk_ping",
                         "status",
-                        "tunnel_start",
-                        "tunnel_stop",
-                        "tunnel_status",
-                        "tunnel_stats",
                         "apk_status",
                         "apk_probe",
                         "apk_ping"
                     )
-                    "mode".oneOf("Tunnel mode: quick | named (tunnel_start)", "quick", "named")
-                    "targetPort" int "Tunnel target port (tunnel_start)"
-                    "publicUrl" str
-                        "Named tunnel public HTTPS hostname/URL to display and persist (tunnel_start)"
                     "probe" bool "Force re-probe (apk_status/status)"
                 }
             )
@@ -2342,21 +2334,6 @@ object ToolCatalog {
                     ?: return JSONObject().put("error", "System hooks not available")
             return when (args.str("action", "status")) {
                 "status" -> hooked.sysStatusHook(args.bool("probe", false))
-
-                "tunnel_start" -> hooked.tunnelStartHook(
-                    args.str("mode", "quick"),
-                    args.intValue("targetPort", 0),
-                    "",
-                    args.optString("publicUrl").takeIf {
-                        it.isNotBlank()
-                    }
-                )
-
-                "tunnel_stop" -> hooked.tunnelStopHook()
-
-                "tunnel_status" -> hooked.tunnelStatusHook()
-
-                "tunnel_stats" -> hooked.tunnelStatsHook(args.bool("probe", false))
 
                 "apk_status" -> hooked.apkStatusHook(args.bool("probe", false))
 
@@ -2417,8 +2394,8 @@ object ToolCatalog {
     private val appConfig = object : ToolHandler {
         override val meta = ToolMeta(
             "app_config",
-            "读写应用全部配置（外观/服务/引擎/隧道/桥接）",
-            "Read and write all app settings: appearance, service, engine limits, tunnel, APK bridge. Designed for AI-driven full configuration of the SOMCP app.",
+            "读写应用全部配置（外观/服务/引擎/桥接）",
+            "Read and write all app settings: appearance, service, engine limits, APK bridge. Designed for AI-driven full configuration of the SOMCP app.",
             "system",
             ToolClass.META
         ) {
@@ -2433,7 +2410,7 @@ object ToolCatalog {
                     )
                     "allowSecrets" bool "Allow writing secret fields on set (default true)"
                     "config" str
-                        "JSON object string or nested object for set (appearance/service/engine/tunnel/apkBridge or flat keys)"
+                        "JSON object string or nested object for set (appearance/service/engine/apkBridge or flat keys)"
                     "themeMode".oneOf("Flat set helper", "system", "light", "dark")
                     "accentColor".oneOf("Flat set helper", "blue", "teal", "indigo", "purple", "green", "orange", "red", "mono")
                     "uiDensity".oneOf("Flat set helper", "compact", "comfortable", "spacious")
@@ -2450,7 +2427,6 @@ object ToolCatalog {
                     "accessToken" str "Flat set helper"
                     "leanTools" bool "Flat set helper"
                     "emulationEnabled" bool "Flat set helper"
-                    "tunnelMode".oneOf("Flat set helper", "off", "quick", "named")
                     "apkMcpUrl" str "Flat set helper"
                 }
             )

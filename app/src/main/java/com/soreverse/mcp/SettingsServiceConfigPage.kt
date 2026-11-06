@@ -56,7 +56,7 @@ internal fun SettingsServiceConfigPage(t: UiText, settings: SettingsStore) {
     val preferred =
         endpoints.firstOrNull { !it.url.contains("127.0.0.1") && !it.url.contains("[::1]") }?.url
             ?: loopback
-    val publicUrl = activeServer(context)?.tunnel?.status?.publicUrl?.takeIf { it.isNotBlank() }
+    val publicUrl = ""
     PageScroll {
         GlassGroup(
             title = if (t.zh) "服务端口" else "Service port",
@@ -106,12 +106,6 @@ internal fun SettingsServiceConfigPage(t: UiText, settings: SettingsStore) {
                 val url = if (settings.authEnabled) "${endpoint.url}?token=${settings.accessToken}" else endpoint.url
                 NavRow(display.first, url, Icons.Default.Link, trailing = if (t.zh) "复制" else "Copy", onClick = {
                     copy(context, url, t.copied)
-                })
-            }
-            if (publicUrl != null) {
-                GroupDivider()
-                NavRow(if (t.zh) "公网隧道" else "Public tunnel", "$publicUrl/mcp", Icons.Default.Public, trailing = if (t.zh) "复制" else "Copy", onClick = {
-                    copy(context, "$publicUrl/mcp", t.copied)
                 })
             }
         }
