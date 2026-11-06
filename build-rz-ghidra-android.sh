@@ -195,6 +195,7 @@ EOF
         -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
         -DANDROID_ABI="$abi" \
         -DANDROID_PLATFORM=android-26 \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DCMAKE_PREFIX_PATH="$(pwd)/$rz_sdk" \
         -DCMAKE_FIND_ROOT_PATH="$(pwd)/$rz_sdk" \
         -DCMAKE_INSTALL_PREFIX="$(pwd)/$rz_ghidra_install" \
