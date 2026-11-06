@@ -44,7 +44,8 @@ jobs:
           # removed the legacy `tools` package from the SDK repository, so keep
           # platform-tools only.
           packages: platform-tools
-      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+      # cmake;3.22.1 必需：系统 cmake 4.x 拒绝 third_party/* 的老 CMake 策略（CMP0048 OLD / VERSION 2.6）
+      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865" "cmake;3.22.1"
 
       - name: Install native build tools
         run: |

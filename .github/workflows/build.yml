@@ -63,7 +63,10 @@ jobs:
           packages: platform-tools
 
       - name: Install SDK packages
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+        # cmake;3.22.1 是必需的：系统 cmake（ubuntu-latest 上是 4.x）拒绝
+        # third_party/* 里的老 cmake_policy(SET CMP0048 OLD) / VERSION 2.6。
+        # build-unidbg-native.sh 会优先用 $ANDROID_HOME/cmake/3.22.1/bin/cmake。
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865" "cmake;3.22.1"
 
       - name: Install native build tools
         run: |
