@@ -47,6 +47,8 @@ third_party/rz-ghidra-host-build/
 third_party/*-jar-extract/
 third_party/*-patched-classes/
 rizin-sdk/
+rizin-build/
+third_party/rizin-src/
 
 # Logs, temporary files and local analysis output
 *.log
