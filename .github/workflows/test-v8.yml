@@ -130,10 +130,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends meson ninja-build gcc g++ pkg-config
-      - name: Clone Rizin source (v0.9.1)
+      - name: Clone Rizin source (latest release)
         run: |
+          LATEST_TAG=$(git ls-remote --tags --sort=-v:refname https://github.com/rizinorg/rizin.git 2>/dev/null | grep -oE "refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$" | head -1 | sed "s|refs/tags/||")
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::error::无法获取 rizin 最新 release tag"
+            exit 1
+          fi
+          echo "::notice::Rizin 最新版本: $LATEST_TAG"
           if [ ! -d third_party/rizin-src/librz/include ]; then
-            git clone --depth 1 --branch v0.9.1 https://github.com/rizinorg/rizin.git third_party/rizin-src
+            git clone --depth 1 --branch "$LATEST_TAG" https://github.com/rizinorg/rizin.git third_party/rizin-src
           fi
       - name: Cache native backends (Rizin + LIEF)
         uses: actions/cache@v4
