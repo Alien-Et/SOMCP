@@ -19,6 +19,7 @@ local.properties
 # Signing secrets
 release/
 release-assets/
+secrets/
 *.jks
 *.keystore
 keystore.properties
