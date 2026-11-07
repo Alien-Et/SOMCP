@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+  # 【魔改】fork 取消前 tag push 不触发 workflow；加手动触发兜底，
+  # 用 tag 输入指定发布版本（不传则退回 github.ref_name，兼容 tag push）。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布版本号（如 v1.0.0）；留空则使用当前分支名'
+        required: false
+        default: ''
 
 # Concurrent tag pushes to the same tag would build the same release twice;
 # serialize by tag so we never build the same release more than once.
@@ -785,7 +793,7 @@ jobs:
           LLM_API: ${{ secrets.API }}
           # Works for both triggers: on a tag push github.ref_name is the
           # tag (vX.Y.Z); on a published release it is also the tag name.
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           # Collect commits between the previous tag and the current release tag.
@@ -891,7 +899,7 @@ jobs:
       - name: Rename APKs and generate SHA256SUMS
         run: |
           set -euo pipefail
-          VERSION="${{ github.ref_name }}"
+          VERSION="${{ inputs.tag || github.ref_name }}"
           VERSION="${VERSION#v}"
           mkdir -p release
           shopt -s nullglob
@@ -923,6 +931,6 @@ jobs:
       - name: Upload APKs and release notes to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: release/*
           body_path: release_notes.md
