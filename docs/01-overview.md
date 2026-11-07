@@ -1,0 +1,151 @@
+# 01 · 项目总览与架构
+
+## 定位
+
+SOMCP 是**跑在 Android 手机上的本地 SO 逆向 MCP 服务器**。App 本身不提供分析界面，
+只负责把 MCP 服务跑稳；所有分析动作由外部 MCP 客户端（Claude Desktop、RikkaHub、
+Cherry Studio、自写脚本）驱动。
+
+- 包名：`com.soreverse.mcp`
+- 版本：`1.0.23`（`versionCode` 24）
+- 最低系统：Android 8.0 / API 26
+- 目标 SDK：36
+- 默认端口：`8000`
+- 许可证：AGPL-3.0-only
+
+## 上游关系
+
+本仓库是 [bilieebiliee1-design/SOMCP](https://github.com/bilieebiliee1-design/SOMCP)
+的魔改分支，版权与 NOTICE 完整保留。相对上游的改动见根 `README.md` 的
+「与上游的差异」与本文档 `19-changelog.md`。
+
+## 分层架构
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  MCP 客户端（电脑 / 同局域网 / adb forward）              │
+└───────────────────────────┬──────────────────────────────┘
+                            │ Streamable HTTP :8000/mcp
+┌───────────────────────────▼──────────────────────────────┐
+│  mcp/  ── 协议层                                          │
+│    McpHttpServer      路由 / 鉴权 / 并发闸门 / SSE        │
+│    ToolCatalog        81 个工具的元数据与 schema          │
+│    ToolCatalogRegistry 名字索引 / lean 过滤 / 热度晋级     │
+│    ToolContracts      ToolMeta / ToolClass / Schema DSL   │
+│    ToolHandler        EngineToolHandler 适配              │
+│    BatchExecution     批量流水线（含事务模式）            │
+└───────────────────────────┬──────────────────────────────┘
+                            │
+┌───────────────────────────▼──────────────────────────────┐
+│  engine/  ── 分析引擎（40 个文件，主体）                  │
+│    EngineRuntime            门面，持有全部后端与工作区     │
+│    EngineRuntimeSources     源解析（root / 本地 / SAF）   │
+│    EngineRuntimeRead        读取 / 反汇编 / 搜索 / 分页    │
+│    EngineRuntimeEdit*       编辑会话 / 补丁 / 构建         │
+│    EngineRuntimeBackend*    Rizin / LIEF / Unidbg 适配    │
+│    ApkAnalyzer / ApkSigTools APK 解析与签名审计            │
+│    ElfParser / ElfAudit     ELF 结构解析与审计             │
+│    FlutterArtifactInspector / Blutter*  Flutter 分析      │
+└───────────────────────────┬──────────────────────────────┘
+                            │
+┌───────────────────────────▼──────────────────────────────┐
+│  nativecore/ + cpp/  ── 原生层                            │
+│    NativeEngine       后端抽象接口（依赖倒置的接缝）      │
+│    native_probe.cpp   完整性探测 / 设备指纹               │
+│    rizin_core.cpp     Rizin JNI（14 个导出符号）          │
+│    lief_elf.cpp       LIEF JNI                            │
+│    xanso_jni.cpp      xAnSo JNI                           │
+│    blutter_bridge.cpp Blutter 原生桥                      │
+└───────────────────────────┬──────────────────────────────┘
+                            │
+┌───────────────────────────▼──────────────────────────────┐
+│  core/  ── 基础设施（20 个文件）                          │
+│    RootShell         su 通道：exec / readBytes / openStream│
+│    SettingsStore     全部设置项（SharedPreferences）      │
+│    AppLog            500 行环形日志缓冲                    │
+│    ToolStats         工具调用统计与持久化                  │
+│    SelfArtifactGuard 自我分析防护（本分支已放行）          │
+│    Provenance        许可证与上游溯源元数据                │
+└───────────────────────────┬──────────────────────────────┘
+                            │
+┌───────────────────────────▼──────────────────────────────┐
+│  service/  ── 前台服务                                    │
+│    McpForegroundService  服务生命周期 / 通知 / 启停        │
+│    BootReceiver          开机自启                          │
+└──────────────────────────────────────────────────────────┘
+
+        UI 层（Compose + M3，与 MCP 服务解耦）
+        MainActivity / ServiceTab / SettingsHub / Settings*Page
+```
+
+## 代码规模
+
+| 层 | 文件数 | 行数 |
+| --- | --- | --- |
+| `mcp/` 协议层 | 8 | ~5,900 |
+| `engine/` 分析引擎 | 47 | ~28,000 |
+| `core/` 基础设施 | 20 | ~4,300 |
+| `nativecore/` + `blutter/` | 4 | ~1,000 |
+| `service/` | 2 | ~700 |
+| UI（根目录 `.kt`） | 20 | ~5,700 |
+| **Kotlin 合计** | **107** | **~40,600** |
+| C++ / 头文件 | 12 | ~6,100 |
+
+行数最大的 5 个文件（改动时优先关注）：
+
+| 文件 | 行数 | 职责 |
+| --- | --- | --- |
+| `mcp/ToolCatalog.kt` | 3,152 | 81 个工具的元数据 + JSON Schema + 分发 |
+| `engine/UnidbgEmulator.kt` | 2,229 | Unidbg 模拟执行 |
+| `engine/EngineRuntimeRead.kt` | 1,768 | 读取 / 反汇编 / 搜索 / 分页 |
+| `mcp/McpHttpServer.kt` | 1,501 | HTTP + 并发闸门 + 工具调用编排 |
+| `engine/EngineRuntimeBackendUnidbg.kt` | 1,433 | Unidbg 网关层 |
+
+## 关键设计决策
+
+### 1. 依赖倒置的 native 接缝
+
+`nativecore/NativeEngine.kt` 是一个纯接口，`mcp/` 与 `engine/` 只依赖它，
+不依赖任何具体引擎。当前活跃后端通过 `NativeEngine.active` 解析，可运行时
+`select()` 切换 —— 换后端不需要动任何调用点。
+
+### 2. EngineRuntime 单一门面
+
+`EngineRuntime` 持有所有后端实例（lief / xanso / unidbg / frida / blutter）、
+工作区表（`workspaces`）、搜索缓存、分页存储。所有 `EngineRuntimeXxx.kt`
+都是它的**扩展函数**，按职责拆分文件而不拆类 —— 这样避免了在 40 个文件之间
+传参，同时保持了文件粒度可读。
+
+### 3. 聚合网关而非工具爆炸
+
+底层能力（Rizin 命令、LIEF 操作、Unidbg 会话）通过 11 个 `*_api` 网关暴露，
+每个网关用 `action` / `op` 枚举分发。否则单纯把 Rizin 的 12 个 action 摊开成
+独立工具就会让工具数翻倍。
+
+### 4. 错误信封统一
+
+所有工具返回 `{"ok": bool, "error": {...}, "nextActions": [...]}` 结构，
+错误码是稳定字符串（见 `18-errors-and-dirs.md`）。`EngineRuntime.guarded`
+负责把内部异常映射到错误码，避免栈信息泄露到客户端。
+
+### 5. root 优先、直读优先
+
+路径解析顺序：**App 能直读就用 `File`**，不能才走 `su -c cat` 流。
+只有确实需要随机访问的工具（`flutter_blutter`、`apk_*` 审计）才会在
+App 私有缓存落一份临时副本，用完即删。详见 `05-root-and-paths.md`。
+
+## 与上游的主要差异
+
+完整清单见根 `README.md`。摘要：
+
+| 类别 | 差异 |
+| --- | --- |
+| 移除 | 分析 Tab、工作目录 UI / SAF 授权、Cloudflare Tunnel、外观设置页、APK MCP 桥接 |
+| 重构 | UI 单页 M3、root 优先路径解析、流式 APK 解析、`RootShell` 用 `find+stat` |
+| 修复 | 见 `19-changelog.md` 的修复清单 |
+
+## 变更记录
+
+| 日期 | 内容 |
+| --- | --- |
+| 2026-11-07 | 建立本文档体系，共 19 篇 + 索引 |

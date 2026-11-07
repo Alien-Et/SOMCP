@@ -1,0 +1,179 @@
+# 13 · 特色分析工具
+
+对应源码：`JniRegisterEngine.kt`（464）、`PackerFingerprint.kt`（497）、
+`ObfuscDetector.kt`（294）、`OllvmDeflattener.kt`（351）、`StringDecryptor.kt`（555）、
+`AntiDebugScanner.kt`（304）、`ImportAttribution.kt`（279）、`StringCensus.kt`（262）、
+`CryptoFingerprint.kt`（139）、`JniMangle.kt`（137）、`NativeProfile.kt`（190）
+
+## 共同原则
+
+1. **纯字节检查，不执行目标文件** —— 对不可信输入安全
+2. **带证据与置信度** —— 不把猜测断言成结论
+3. **宁可说不知道** —— 例如 `obfusc_api(action=deflatten)` 固定返回
+   `verdict=candidates_only` + `confidence=low`
+
+## jni_api — JNI 动态注册还原
+
+```text
+jni_api(action="scan")                    # 扫所有 JNINativeMethod 表
+jni_api(action="resolve", query="...")    # 按名字/地址解析
+jni_api(action="method_table")            # 完整表
+```
+
+原理：扫描只读数据段里的 `JNINativeMethod` 三指针表：
+
+```c
+typedef struct {
+    const char* name;       // Java 方法名
+    const char* signature;  // JNI 签名，如 "(Ljava/lang/String;)V"
+    void*       fnPtr;      // 真实原生地址
+} JNINativeMethod;
+```
+
+Android 上多数 native 方法不导出 `Java_*` 符号，而是在 `JNI_OnLoad` 里用
+`RegisterNatives` 动态注册。普通符号表看不到这层映射。
+
+`fnPtr` 会被解析回 `.symtab` / `.dynsym` 符号（若存在）。
+
+## packer_api — 加固 / 壳指纹
+
+```text
+packer_api(action="scan")         # 逐段熵 + 标记
+packer_api(action="fingerprint")  # 综合判定
+```
+
+检查项：
+
+| 维度 | 证据 |
+| --- | --- |
+| 厂商标记串 | 360 / 梆梆 / 爱加密 / 阿里 / 腾讯乐固 / UPX |
+| 逐段 Shannon 熵 | 高熵段 = 加密/压缩 |
+| 入口点异常 | `e_entry` 落在 `.text` 之外 = 壳 stub |
+| 段名异常 | 非标准名、空段名 |
+| 反分析字符串 | `/proc/self/maps`、`frida`、`xposed` 等 |
+
+结论带证据与置信度，**不会把「混淆构建」直接断言成「商业加固」**。
+
+## obfusc_api — 控制流混淆检测
+
+```text
+obfusc_api(action="scan")                      # 扫全部函数
+obfusc_api(action="detect", locator="...")     # 单函数
+obfusc_api(action="deflatten", locator="...")  # 尝试去扁平化
+```
+
+判定依据是**真实 basic block 图**，不是符号名：
+
+| 特征 | 含义 |
+| --- | --- |
+| dispatcher 块 | 高 fan-in + 薄块体（只做比较跳转的 switch） |
+| 扁平化因子 | dispatcher 覆盖的块比例 |
+| bogus edge 候选 | 指向 dispatcher 的假边比例 |
+
+逐函数给 `flattened` / `suspected` / `clean` + 置信度。
+
+### 为什么不用符号名启发式
+
+`analyze_elf` 里的 `hasOllvm` 标签匹配 `.cold.` / `__clang_call_terminate`
+这类**标准 clang 产物** —— 正常 NDK Release 包也会命中，误报率极高。
+
+### deflatten 的诚实边界
+
+`action=deflatten` 固定返回：
+
+```json
+{
+  "verdict": "candidates_only",
+  "confidence": "low",
+  "limitations": [
+    "Rizin 每个基本块只给 addr/size/ninstr/jump/fail，编码真实后继的",
+    "状态变量和 case 表并不在输入里，任何单一「还原边」都是猜测"
+  ]
+}
+```
+
+它输出的是**候选真实边**而非「已还原的 CFG」。下一步建议是
+`read_disasm` 读每个源块的状态赋值，或用 `emulate_call` 观测真实路径。
+
+## strdecrypt_api — 加密字符串辅助解密
+
+```text
+strdecrypt_api(action="scan")                        # 定位密文块
+strdecrypt_api(action="decrypt", locator="...")      # 尝试解密
+strdecrypt_api(action="hints")                       # 手工路线提示
+```
+
+处理编译期字符串加密（OLLVM `struc` / `encloud-cc` / 商业壳 / 手写变体
+把密文留在 `.rodata`，运行时经桩函数解密）。
+
+**只声称做两件事里的一半：从字节反推变换。**
+
+| 阶段 | 做法 |
+| --- | --- |
+| `scan` | 在已分配非可执行段里定位「既非明文文本也非零填充」的字节段 |
+| `decrypt` | 256 个单字节 XOR / add / sub / rol / ror **全量**扫一遍，按可打印 ASCII 占比排序 |
+| 多字节 XOR / RC4 | 只试调用方给的密钥（密钥空间无界，无法枚举） |
+
+判定门槛：可打印率 ≥ 0.75，且**该比例始终回传**。因为随机数据撞出
+可打印输出的概率不低，把未经验证的猜测当作「已还原字符串」比不报更糟。
+
+**不覆盖** AES / DES / ChaCha 与运行时派生密钥。`action=hints` 给出手工路线：
+
+1. 找调用方
+2. 读解密循环
+3. 定位 RC4 的 256 字节 KSA / AES 的多轮循环
+
+更可靠的动态路线：`dynamic_api` / `unidbg_api` 直接从内存读明文。
+
+## antidebug_api — 反调试 / 反 hook 扫描
+
+```text
+antidebug_api(action="scan")
+antidebug_api(action="detect")
+```
+
+按证据强度分级：
+
+| 级别 | 证据 | 强度 |
+| --- | --- | --- |
+| `import` | 加载器必须解析的符号（`ptrace` / `prctl`） | 近乎确证 |
+| `string` | `/proc/self/*` 等字面量 | 弱 |
+| `code_pattern` | x86-64 inline detour 跳板序列 | 中 |
+
+## import_api — 导入符号溯源
+
+```text
+import_api(action="trace")   # 按符号查来源库
+import_api(action="scan")    # 全量归属
+```
+
+解析 `.gnu.version_r`（DT_VERNEED）把每个导入符号**精确归属**到源库，
+并标注 Android Bionic 各库用途。
+
+缺版本表时降级为 `DT_NEEDED` 启发式，并在 `evidence` 字段明说
+「库名不是来源证明」。
+
+## 其它 analyze 工具
+
+| 工具 | 作用 |
+| --- | --- |
+| `str_encoding_census` | 字符串编码分布（UTF-8 / UTF-16LE / ASCII） |
+| `str_literal_classes` | 字符串字面量分类（URL / 路径 / 错误消息 / 密钥候选） |
+| `crypto_const_fingerprint` | 加密常量指纹（S-box / 轮常量） |
+| `crypto_hash_constants` | hash 算法常量（SHA / MD5 初始值） |
+| `net_endpoint_extract` | 提取网络端点（URL / host / path） |
+| `file_path_roots` | 提取文件路径根（`/data/`、`/sdcard/` 等） |
+| `env_property_keys` | 提取环境变量 / 系统属性 key |
+| `jni_mangle_codec` | JNI 符号名编解码（`Java_a_b_c` ↔ `a.b.c`） |
+| `android_ident_note` | Android 构建标识（NDK 版本痕迹） |
+| `ndk_toolchain_fingerprint` | NDK 工具链指纹 |
+| `libcxx_variant` | libc++ vs gnustl vs none |
+| `symbol_visibility_audit` | 符号可见性审计 |
+| `code_padding_caves` | code cave 识别（可注入空间） |
+| `dt_needed_resolve` | DT_NEEDED 依赖链解析 |
+
+## 变更记录
+
+| 日期 | 内容 |
+| --- | --- |
+| 2026-11-07 | 建立文档；记录 deflatten 与 strdecrypt 的诚实边界 |

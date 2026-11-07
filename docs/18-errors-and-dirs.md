@@ -1,0 +1,251 @@
+# 18 · 错误码、数据目录与排障
+
+## 错误信封
+
+所有工具返回统一结构：
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "APK_INVALID",
+    "message": "/data/local/tmp/x.txt is not a ZIP/APK file (magic=74657374)",
+    "severity": "error",
+    "recoverable": true,
+    "retrySameArguments": false,
+    "diagnostics": {},
+    "argument": "path",
+    "badValue": "/data/local/tmp/x.txt"
+  },
+  "nextActions": []
+}
+```
+
+`badValue` **只含原始输入**，不再拼接诊断信息。
+
+## 错误码全集
+
+### 输入类
+
+| 错误码 | 含义 | 处置 |
+| --- | --- | --- |
+| `INVALID_ARGUMENT` | 参数缺失或非法 | 检查参数名与类型 |
+| `INPUT_REQUIRED` | 必填参数为空 | 补上参数 |
+| `BAD_REQUEST` | 请求体超限或格式错 | 检查 `maxRequestKb` |
+| `PATH_NOT_ALLOWED` | 路径含 `..` 穿越 | 用绝对路径 |
+| `INVALID_WORK_DIRECTORY` | SAF 工作目录无效 | 重新选目录（通常用不到） |
+| `UNKNOWN_ACTION` | 工具或 action 不存在 | 查 `meta_info(describe)` |
+| `TOOL_DISABLED` | 工具在禁用列表里 | 检查 `disabledTools` |
+| `INVALID_CURSOR` | 分页游标过期 | 重新发起原请求 |
+
+### APK 类
+
+| 错误码 | 含义 | 处置 |
+| --- | --- | --- |
+| `APK_INVALID` | 不是 ZIP/APK（magic 不匹配） | `message` 里有实际 magic |
+| `APK_READ_FAILED` | 读取失败（含 root cat 失败） | 检查路径与 root 授权 |
+| `APK_LIMIT_EXCEEDED` | 超过 4 GiB 输入上限 | — |
+| `APK_TOO_LARGE_FOR_AUDIT` | 堆余量不足，审计工具拒绝整包读 | 改用 `apk_analyze`（流式） |
+| `NOT_ELF_SO` | 文件不是 ELF | 确认路径 / URL |
+
+### ELF 类
+
+| 错误码 | 含义 | 处置 |
+| --- | --- | --- |
+| `ELF_PARSE_FAILED` | ELF 结构解析失败 | 文件可能被截断 |
+| `ELF_CORRUPTED` | 兜底错误（未分类异常） | 看 `message` |
+| `NOT_ELF_INPUT` | 输入是 APK/JAR 条目 | 用 `apk_analyze` |
+| `INVALID_LOCATOR` | locator 格式不认识 | 查 `acceptedLocatorForms` |
+| `OFFSET_OUT_OF_RANGE` | 偏移超范围 | 检查 `offset` / `addr` |
+| `INVALID_HEX` | hex 字符串非法 | 检查字符集与长度 |
+| `SYMBOL_NOT_FOUND` | 符号不存在 | 先 `analyze_elf(view=list)` |
+| `FUNCTION_NOT_FOUND` | 函数不存在 | 先 `analyze_functions` |
+
+### 工作区 / 会话类
+
+| 错误码 | 含义 | 处置 |
+| --- | --- | --- |
+| `WORKSPACE_REQUIRED` | 缺 `workspaceId` | 先 `so_open` |
+| `WORKSPACE_NOT_FOUND` | workspaceId 不存在 | 重新 `so_open` |
+| `EDIT_SESSION_NOT_FOUND` | editSessionId 不存在 | `session_open` |
+| `AUDIT_NOT_FOUND` | 审计记录不存在 | 重新 `session_audit` |
+| `RESULT_NOT_FOUND` | Blutter 结果不存在 | `flutter_blutter(action=result)` |
+| `RESULT_TRUNCATED` | 结果被截断 | 用游标继续 |
+| `JOB_NOT_FOUND` | 异步任务不存在 | 重新发起 |
+
+### 执行类
+
+| 错误码 | 含义 | 处置 |
+| --- | --- | --- |
+| `SERVER_BUSY` | 重型工具闸门已满 | 按 `retryAfterMillis` 重试 |
+| `RATE_LIMITED` | 超过每分钟调用上限 | 降低频率 |
+| `INSUFFICIENT_MEMORY` | 内存不足 | 关掉其它工作区 / 用流式 |
+| `EMULATION_DISABLED` | Unidbg 开关关闭 | 打开 `emulationEnabled` |
+| `EMULATOR_UNAVAILABLE` | Unidbg 原生库缺失 | 见 `12-dynamic-analysis.md` |
+| `RIZIN_CFG_FAILED` | Rizin 配置失败 | 检查 `librz_native.so` 是否 stub |
+| `XANSO_BUILD_FAILED` | xAnSo section 重建失败 | 文件可能不是标准 ELF |
+| `TOO_MANY_STEPS` | 批量流水线步数超限 | 拆批 |
+| `SELF_ANALYSIS_FORBIDDEN` | 试图分析 SOMCP 自己 | 本分支已放行 |
+| `WORK_DIRECTORY_NOT_SELECTED` | 需要 SAF 工作目录 | 魔改后极少出现 |
+
+## 数据目录
+
+### App 私有（`/data/user/0/com.soreverse.mcp/`）
+
+| 路径 | 内容 | 清理 |
+| --- | --- | --- |
+| `cache/unidbg/emu_*.so` | Unidbg 临时 SO | 写前清理 5 分钟前的 |
+| `cache/flutter-inspect/staged-*.apk` | Blutter root-only 输入副本 | `finally` 删除 |
+| `cache/apk-audit/audit-*.apk` | APK 审计 root-only 副本 | `finally` 删除 |
+| `cache/jna-*` / `nativelib-loader_*` / `oat_primary` / `rootfs` | 系统/加载器 | 系统管理 |
+| `files/rizin/` | Rizin 运行时（约 14 MB） | 持久 |
+| `no_backup/blutter/v1/jobs/<jobId>/` | Blutter 输入 | `prune` 或手动 |
+| `no_backup/blutter/v1/results/<key>/` | Blutter 输出 | `prune` 或手动 |
+
+### App 外部私有（`/storage/emulated/0/Android/data/com.soreverse.mcp/files/`）
+
+| 路径 | 内容 |
+| --- | --- |
+| `<name>.so` | `build_so` 产物 |
+| `<name>.patch-report.json` | patch report |
+| `reports/` | `meta_info(report, writeToFile=true)` 输出 |
+| `audits/` | `session_audit` 持久化 |
+| `stats/toolstats.json` | 工具调用统计 |
+| `downloads/` | `so_open(open_url)` 下载落点 |
+
+**这个目录不需要任何存储权限，也不在用户可见的文件管理器里。**
+
+### 绝对不写的地方
+
+| 路径 | 原因 |
+| --- | --- |
+| `/data/app/...` | 系统所有，无写权限 |
+| `/sdcard` 根 | 无存储权限 |
+| 被测 App 的目录 | 越界 |
+
+## 排障手册
+
+### 服务起不来
+
+1. `system_control(action=status)` 看服务状态
+2. 检查端口占用（`PortUtils.isPortAvailable`）
+3. 检查 `bindHost`
+4. `system_logs` 看环形缓冲
+
+### 客户端连不上
+
+1. 本地验证：
+   ```bash
+   curl -s -X POST http://127.0.0.1:8000/mcp \
+     -H 'Content-Type: application/json' \
+     -H 'Accept: application/json, text/event-stream' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}'
+   ```
+2. 局域网：确认手机 IP 与 `bindHost = 0.0.0.0`
+3. 电脑侧：`adb forward tcp:8000 tcp:8000`
+4. 开了 token：`Authorization: Bearer <token>` 或 `?token=<token>`
+
+### `RIZIN_UNAVAILABLE`
+
+1. `meta_info(capabilities)` 看 `rizin.status`
+2. `meta_info(health)` 看 `librzNative.size`
+   - 2.9 MB → stub，需要重建原生
+   - 61 MB → 完整
+3. 本地重建：
+   ```bash
+   bash build-native-android.sh
+   rm -rf app/.cxx app/build/intermediates/cxx
+   ./gradlew :app:assembleDebug --rerun-tasks
+   ```
+
+### `EMULATOR_UNAVAILABLE`
+
+1. 看错误消息里的具体缺失库
+2. 32 位设备：`libunicorn.so` 本来就不提供，无解
+3. 本地 debug 包：`bash build-unidbg-native.sh --abi arm64-v8a`
+4. CI 包：应该齐全，若缺说明 workflow 出错
+
+### `so_open` 返回 `SO_NOT_FOUND`
+
+1. `so_open(action=list)` 的返回里有 `rootAvailable`
+2. 非 root 时 `/data/data` 无解
+3. 非 root 时 `/sdcard` 无解（manifest 无存储权限）
+4. `badValue` 只含原始路径，可直接用于重试
+
+### `apk_analyze` 返回 `APK_INVALID`
+
+`message` 里有实际 magic：
+
+```json
+"message": "/data/local/tmp/x.txt is not a ZIP/APK file (magic=74657374)"
+```
+
+| magic | 判断 |
+| --- | --- |
+| `504b` | 正常 ZIP |
+| `7f45` | ELF（用 `so_open`） |
+| `74657374` | 文本 |
+| 目录 | `is a directory, not a ZIP/APK file` |
+
+### `apk_analyze` sha256 与 `sha256sum` 不一致
+
+**已修复**（见 `19-changelog.md` P0-1）。如果还遇到：
+
+1. 确认装的是最新包
+2. 对比 `apk_sig_verify` 的 sha256（走另一条路径）
+3. 若两者不一致，检查 `NonClosingInputStream` 是否生效
+
+### `APK_TOO_LARGE_FOR_AUDIT`
+
+审计工具需要整包随机访问。堆余量不足时：
+
+- 用 `apk_analyze`（流式，不进堆）
+- 或关掉其它工作区释放内存后重试
+
+### Gradle 编译后行为没变
+
+```bash
+./gradlew :app:assembleDebug --rerun-tasks
+```
+
+验证 dex：
+
+```bash
+unzip -p app/build/outputs/apk/debug/app-arm64-v8a-debug.apk classes3.dex > /tmp/d.dex
+grep -qa "新增字符串" /tmp/d.dex && echo OK || echo "没进包"
+```
+
+### 签名冲突
+
+CI release 包签名与本地 debug 包不同，直接覆盖安装会报 `SIGNATURE_CONFLICT`。
+
+用 CI keystore 重签本地包：
+
+```bash
+cp app/build/outputs/apk/debug/app-arm64-v8a-debug.apk /tmp/final.apk
+$ANDROID_HOME/build-tools/36.0.0/apksigner sign \
+  --ks release/somcp-release.jks \
+  --ks-pass pass:<store-pass> \
+  --ks-key-alias <alias> \
+  --key-pass pass:<key-pass> \
+  --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+  /tmp/final.apk
+```
+
+## 日志
+
+`system_logs` 读取 500 行环形缓冲：
+
+```text
+system_logs(action="snapshot")             # 全量
+system_logs(action="filter", query="...")  # 过滤
+system_logs(action="clear")                # 清空
+```
+
+`AppLog` 的 TAG：`SOMCP-Root`（`RootShell`）及其它模块各自的 TAG。
+
+## 变更记录
+
+| 日期 | 内容 |
+| --- | --- |
+| 2026-11-07 | 建立文档；补全新错误码（APK_READ_FAILED / APK_TOO_LARGE_FOR_AUDIT） |

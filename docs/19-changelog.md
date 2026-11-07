@@ -1,0 +1,310 @@
+# 19 · 变更总览与总结
+
+这是本套文档的**总览与收尾**。每轮改动结束后更新这里，作为「这一版做了什么」的
+一站式索引；细节留给对应编号的文档。
+
+---
+
+## 一、本分支相对上游做了什么
+
+上游：[bilieebiliee1-design/SOMCP](https://github.com/bilieebiliee1-design/SOMCP)
+（AGPL-3.0-only，Copyright (C) 2026 SOMCP authors）
+
+### 1. 定位调整：从「带 UI 的分析器」到「纯 MCP 服务器」
+
+上游有一个内置「分析」Tab、文件浏览器、前端分析面板。本分支全部删除，
+App 只做一件事：把 MCP 服务跑稳。所有分析动作由外部 MCP 客户端驱动。
+
+**影响**：App 从「人用的工具」变成「给 AI 用的后端节点」。
+
+### 2. 路径策略：从「SAF 工作目录」到「root 任意路径直读」
+
+上游要求用户通过系统文件选择器授权一个工作目录，所有文件必须在这个目录内。
+本分支废除该限制：
+
+| 上游 | 本分支 |
+| --- | --- |
+| 必须先选工作目录 | 不需要 |
+| 只能读目录内的文件 | 有 root 就任意路径 |
+| 读受限路径要先复制进工作目录 | `su -c cat` 管道直读，不落盘 |
+| 大 APK 一次性 `readBytes()` 会 OOM | 流式解析，386MB 包 21 秒 |
+
+**影响**：可以直接分析 `/data/app/<pkg>/` 下的安装包、`/data/data/<pkg>/` 私有数据、
+`/data/local/tmp` 下的样本，不需要任何中间拷贝。
+
+### 3. 访问控制：从「默认要 token」到「默认免 key」
+
+上游 `authEnabled` 默认 `true`，本分支改为 `false` 并加一次性迁移
+`lanNoAuthMigrated_v1`。
+
+**影响**：局域网内客户端直接连，不需要 Authorization。需要收紧时可在
+「设置 → 访问」打开。
+
+### 4. 删除的功能
+
+| 功能 | 原因 |
+| --- | --- |
+| 分析 Tab + AnalyzeController + AnalyzeDataAdapter + ElfOverviewPanel | 定位调整 |
+| 工作目录 UI + SAF 授权流程 | 路径策略调整（仅 `open_url` 保留兼容） |
+| Cloudflare Tunnel 全链路 | 用户明确不需要，且 CI 要花 20 分钟编译 cloudflared |
+| 外观设置页 | UI 简化（主题代码保留，只是没有入口） |
+| APK MCP 桥接 | 依赖 MT 管理器侧边栏，链路不可控 |
+| 崩溃上报 / 日志上报 | 隐私与体积 |
+| `DeepReportStore.kt` / `AiTypes.kt` / `ExternalLinks.kt` / `CrashReportActivity` | 死代码 |
+
+### 5. UI 重构（5 轮）
+
+| 轮次 | 改动 |
+| --- | --- |
+| 1 | 「暗夜法医」玻璃拟态风格 |
+| 2 | 4 tab → 2 tab，保活/访问收回设置二级 |
+| 3 | 删除导航栏，单页 + 右上角齿轮 |
+| 4 | Google Material 3 标准配色，设置改 M3 列表 |
+| 5 | 死代码清理、样式统一、打开 App 自动启动 MCP |
+
+### 6. 工程化
+
+| 项 | 上游 | 本分支 |
+| --- | --- | --- |
+| Rizin 版本 | pin `v0.9.1` | CI 自动取最新 release tag |
+| cloudflared 编译 | CI 里花 20 分钟 | 已删 |
+| CMake 4.x 兼容 | 不兼容 | `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` + 幂等 sed |
+| 签名 keystore | — | 生成并配置 5 个 secrets |
+| Release 触发 | 仅 tag push | 加 `workflow_dispatch` + `inputs.tag` 兜底 |
+
+---
+
+## 二、本分支修掉的具体 Bug
+
+按严重程度排序。每条都写了**现象 → 根因 → 修法**，便于回归验证。
+
+### P0-1 · `apk_analyze` 的 sha256 错误且不稳定
+
+**现象**：同一个 386MB APK 连续调用两次，返回两个不同的 sha256
+（实测在 `fd53cae8…` 与 `2bd19f75…` 之间摆动），且都不等于 `sha256sum`。
+
+**根因**：root 流路径用 `DigestInputStream` 包住 `ZipInputStream` 的输入，
+而 `ZipInputStream` 读到 central directory 就停了，不会把文件读完。
+摘要只覆盖「前 N 字节」，N 还随内部缓冲预读量漂移。
+
+**修法**：ZIP 遍历结束后继续把剩余字节读完再收摘要。
+关键技术点：`ZipInputStream.close()` 会连带关掉底层流，必须用
+`NonClosingInputStream` 包装，否则读尾部立刻抛 `Stream closed`。
+
+**验证**：连续 4 次全部返回 `b3830a5d…cb48ba`，与 `sha256sum` 一致。
+
+### P0-2 · 非 ZIP 输入返回 `ok:true`
+
+**现象**：传 `.so` / 文本 / 目录 / `/dev/null`，全部返回
+`{"ok":true, "entryCount":0}`，AI 客户端以为分析成功。
+
+**根因**：`analyzeApk` 的 root 分支在 magic 校验之前就 `return` 了，
+而 `analyzeRootStream` 自己没做校验。
+
+**修法**：三条入口（`analyze` / `analyzeFile` / `analyzeRootStream`）全部
+先读 4 字节验 magic，不是 ZIP 抛 `ApkNotZipException`（映射到 `APK_INVALID`），
+`message` 里带实际 magic 值。
+
+**验证**：文本 → `APK_INVALID (magic=74657374)`；ELF → `APK_INVALID (magic=7f454c46)`；
+目录 → `is a directory, not a ZIP/APK file`；不存在 → `APK_READ_FAILED`。
+
+### P0-3 · `manifest` / `dexFiles` / `parsedBytes` 是假值
+
+**现象**：root 流解析 386MB APK，`manifest.present` 永远是 `false`，
+`resourcesArsc` 永远 `false`，`parsedBytes` 永远 `0`，`flutter` 永远空对象。
+
+**根因**：`analyzeRootStream` 里这几个变量声明后从未赋值，只收集了条目名。
+
+**修法**：真实读取 `AndroidManifest.xml` 和 `classes*.dex` 并解析
+（DEX 头解出 magic / methodIds / classDefs 等），`resources.arsc` 存在性检查，
+Flutter 判定复用已收集的条目清单（`inspectFlutterFromEntries`）。
+`analyzeFile` 同步补上。
+
+**验证**：`manifest.present:true`、`resourcesArsc:true`、`parsedBytes:143690824`、
+`methodIds` 全部出现。
+
+### P0-4 · `analyzeApk` 对同一文件开两次 root 流
+
+**现象**：每个大 APK 分析要起两次 `su` + 两次 `cat`，第一次读进 pipe 的数据
+被直接丢弃。
+
+**根因**：先 `openStream` 探一次（probe），关掉，再让 `analyzeRootStream`
+自己 `openStream` 第二次。
+
+**修法**：能直读走 `analyzeFile`，不能直读只开一次 root 流。
+
+**验证**：386MB 包 root 流路径 21 秒（原来约 40 秒）。
+
+### P1-5 · `readBytes` 的超时形同虚设
+
+**现象**：读一个被 FUSE 挂住或 NFS 卡死的文件，MCP 请求永久挂起。
+
+**根因**：`val timeout = ...` 算出来后**从未使用**，`waitFor` 用的是
+`defaultTimeoutMs`；而且 `waitFor` 排在「读完 stdout」之后 ——
+`cat` 不产出时 `input.read()` 永久阻塞，永远走不到 `waitFor`。
+
+**修法**：看门狗定时器到点直接 `destroyForcibly()`，让阻塞的 read 抛
+`IOException` 返回。同时 `stderr` 由守护线程抽干（否则 `cat` 写满 64KB
+pipe 后与 App 互等死锁）。
+
+### P1-6 · `openStream` 不检查退出码
+
+**现象**：`cat <目录>` / `cat <不存在文件>` 返回「非 null 但立即 EOF」的流，
+上层无法区分「空文件」和「读取失败」。这是 P0-2 的成因之一。
+
+**修法**：读到 EOF 时校验子进程退出码，非 0 抛 `IOException` 并带上 stderr。
+新增 `expectedSize` 参数，`cat` 中断导致字节数偏少时明确报「截断」。
+
+**验证**：目录 → `is a directory, not a ZIP/APK file`；
+不存在 → `root cat failed ... (exit=1): cat: ... No such file or directory`。
+
+### P1-4 · `open_url` 永久不可用
+
+**现象**：`so_open(action=open_url)` 永远返回 `WORK_DIRECTORY_NOT_SELECTED`。
+
+**根因**：强制要求 SAF 工作目录，而工作目录 UI 已经删了，`treeUri` 永远是 null。
+
+**修法**：没有工作目录时落到 App 外部私有目录 `files/downloads/`
+（不需要任何存储权限）。
+
+**验证**：错误码变成 `NOT_ELF_SO`（说明下载流程真的执行了）。
+
+### P2-7 · 首页 Root 卡 1Hz 轮询
+
+**现象**：一天 86,400 次 `su -c id` fork（单次约 25ms），烧电、刷爆 KernelSU 日志、
+息屏后照跑。
+
+**修法**：降到 30 秒一次。「重新检测」按钮可立即重测。
+
+### P2-8 · `badValue` 被污染
+
+**现象**：`badValue` 返回 `"/data/local/tmp (root available=true)"`，
+任何程序化处理该字段的地方都拿到非法路径。
+
+**根因**：异常消息里拼了诊断信息，`guarded` 用
+`substringAfter(": ")` 当 badValue。
+
+**修法**：异常消息只带原始路径；`guarded` 兜底再剥离一次括号（兼容老格式）。
+
+### P2-9 · 4 个 `apk_*` 审计工具整包进堆
+
+**现象**：386MB 包直接占 386MB 堆，`MemoryGuard` 是 no-op，超限就
+`OutOfMemoryError`。
+
+**修法**：读入前按真实堆余量检查（`AUDIT_MAX_HEAP_FRACTION = 0.45`），
+放不下返回 `APK_TOO_LARGE_FOR_AUDIT` 并建议改用流式 `apk_analyze`。
+root-only 路径先流式落临时文件到 `cache/apk-audit/`，读完即删。
+
+**验证**：368MB 包返回「only 221 MiB of heap headroom is available」。
+
+### 附加修复
+
+| 问题 | 修法 |
+| --- | --- |
+| `flutter_blutter` 对 root-only 路径报 `EACCES` | 判定条件从 `!isFile` 改为 `!isFile \|\| !canRead`，先流式落缓存 |
+| `flutter_blutter` 不接受 `.zip` | 扩展名白名单加 `zip` |
+| `UnidbgEmulator.writeTemp` 的 `deleteOnExit` 在 Android 不可靠 | 写前清理 5 分钟前的 `emu_*.so` |
+| `guarded` 把所有 `IOException` 吞成无信息文案 | 带上原始消息 |
+| `UnidbgEmulator` ABI 判定 `endsWith("64")` 恒 false | 改为 `contains("64")` |
+| `RootShell.listFiles` 按固定 9 列解析 `ls -la` | 改用 `find + stat` |
+| `RootShell.walkFiles` 逐层起 su 超时 | 单条 `find -maxdepth N` + 批量 stat（0.12s 扫 7725 个 so） |
+| CI CMake 4.x 报 `Compatibility with CMake < 3.5 has been removed` | `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` |
+| CI CMake 4.x 报 `Policy CMP0048 may not be set to OLD` | 幂等 sed 改 CMakeLists |
+| CI keystore 恢复 `base64: invalid input` | `tr -d '[:space:]'` 去空白 + `keytool -list` 校验 |
+
+---
+
+## 三、当前状态
+
+### 版本
+
+| 项 | 值 |
+| --- | --- |
+| `versionName` | `1.0.23` |
+| `versionCode` | 24 |
+| 工具数 | 81 |
+| Kotlin 行数 | ~40,600（107 文件） |
+| C++ 行数 | ~6,100（12 文件） |
+
+### 后端可用性
+
+| 后端 | CI release 包 | 本地 debug 包 |
+| --- | --- | --- |
+| Rizin | ✅ `loaded`（`librz_native.so` 61MB） | ⚠️ 取决于是否跑过 `build-native-android.sh` |
+| LIEF | ✅ `loaded` | ⚠️ submodule 空时是 `failed: 空 stub` |
+| rz-ghidra | ✅ `libcore_ghidra.so` | ⚠️ 同 Rizin |
+| Unidbg | ✅（`libkeystone` / `libunicorn` 齐全） | ❌ `EMULATOR_UNAVAILABLE`（缺 `libkeystone.so`） |
+| Frida | 需用户自装 frida-server | 同 |
+
+### 实测数据
+
+| 场景 | 结果 |
+| --- | --- |
+| `apk_analyze` 386MB 直读 | ~4s，sha256 正确，manifest + 143MB dex 解析 |
+| `apk_analyze` 386MB root 流 | ~21s，同上 |
+| `so_open` `/data/app/.../lib/arm64/*.so` | ✅ `source: root_fs` |
+| `so_open(action=list)` root 扫描 | ✅ 2000 项（`/data/app` 7725 个 so 用时 0.12s） |
+| `apk_sig_verify` 368MB | ✅ 被堆预算拦住（正确行为） |
+| 非 ZIP 输入 | ✅ 全部 `APK_INVALID` |
+| `flutter_blutter` root-only APK | ✅ 走 staged 副本，14473 条目 |
+
+---
+
+## 四、待办 / 已知限制
+
+### 待办
+
+| 项 | 说明 |
+| --- | --- |
+| `so_open(action=apps)` | 用 `PackageManager` 枚举已安装应用，拿 `sourceDir` / `nativeLibraryDir`，让非 root 用户也能定位 APK/SO。当前代码未实现 |
+| 前端分析面板 | 无计划（定位是纯 MCP 服务器） |
+| 子代理（`agent_api`） | 代码里有 `SubAgentRunner`，但 UI 没有配置入口 |
+
+### 已知限制
+
+| 限制 | 原因 |
+| --- | --- |
+| 非 root 读 `/data/data/<other>` | 物理无解（`0700`） |
+| 非 root 读 `/sdcard` 任意目录 | manifest 无任何存储权限 |
+| 32 位设备 `emulate_*` | `libunicorn.so` 需要 `__uint128_t`，NDK 32 位工具链不提供 |
+| `obfusc_api(action=deflatten)` | 固定 `candidates_only` + `confidence=low`，因为 Rizin 不给状态变量和 case 表 |
+| `strdecrypt_api` 不覆盖 AES/DES/ChaCha | 密钥空间无界，无法枚举 |
+| Dart AOT 大库的 Rizin 函数识别 | Rizin 对 Dart 快照的固有限制，应改用 `flutter_blutter` |
+| `MemoryGuard` | 完全 no-op，靠 `largeHeap` + 堆余量预检兜底 |
+
+---
+
+## 五、开发约定
+
+### 改代码时
+
+1. **先读对应编号的文档**，了解现有设计
+2. 改动后用 `--rerun-tasks` 编译，并验证 dex 里真的有新代码
+3. 改 native 代码要删 `app/.cxx`
+4. 新增错误码要在 `guarded` 里加分支，并同步 `18-errors-and-dirs.md`
+
+### 改文档时
+
+| 改动类型 | 要更新 |
+| --- | --- |
+| 功能改动 | 对应编号文档 + 本文档「变更记录」 |
+| 加/删工具 | `03-tool-catalog.md` 的清单与总数 + `README.md` |
+| 改设置项 | `16-settings.md` |
+| 改错误码 | `18-errors-and-dirs.md` |
+| 改构建流程 | `17-build-ci.md` |
+| 一轮改动结束 | 本文档的「变更记录」 |
+
+### Git 约定
+
+- 提交信息用中文，格式 `<type>: <描述>`
+- 类型：`feat` / `fix` / `docs` / `chore` / `refactor`
+- 大范围改动先只提交本地，推送等用户发话
+- 标签按仓库已有序列递增，不拿 APK 的 `versionName` 当标签名
+
+---
+
+## 六、变更记录
+
+| 日期 | 内容 |
+| --- | --- |
+| 2026-11-07 | 建立文档体系（19 篇 + 索引）；<br>修复 9 个 bug（3 个 P0、3 个 P1、3 个 P2）+ 8 个附加问题；<br>README 重写并同步 |

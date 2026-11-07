@@ -1,0 +1,207 @@
+# 16 · 设置项参考
+
+对应源码：`core/SettingsStore.kt`（1,396 行）
+
+所有设置项都存在 `SharedPreferences`，通过 `SettingsStore(context)` 访问。
+下面按功能分组，`默认值` 是首次安装时的值。
+
+## 服务
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `port` | Int | `8000` | MCP 端口，范围 `1024..65535` |
+| `bindHost` | String | `"0.0.0.0"` | 绑定地址；`127.0.0.1` 仅本机 |
+| `autoStartGuideAcknowledged` | Bool | `false` | 自动启动引导是否已确认 |
+| `requestTimeoutMs` | Long | — | 请求超时 |
+| `maxRequestKb` | Int | `512` | 请求体上限 |
+
+## 访问控制
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `authEnabled` | Bool | **`false`** | Token 认证开关（本分支改为默认关闭） |
+| `accessToken` | String | 随机 | 访问令牌；开启认证时自动轮换 |
+
+> 从关闭切到开启时，`SettingsStore` 会调用 `resetAccessToken()` 轮换令牌，
+> 使之前泄露的旧 token 立即失效。
+
+## 保活
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `wakeLockEnabled` | Bool | — | 持 WakeLock |
+| `floatingEnabled` | Bool | — | 悬浮窗 |
+| `floatingEdgeHide` | Bool | — | 悬浮窗贴边隐藏 |
+| `bootAutoStart` | Bool | — | 开机自启 |
+
+## 界面
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `language` | String | `"system"` | `system` / `zh` / `en` |
+| `themeMode` | String | `"system"` | `system` / `light` / `dark` |
+| `accentColor` | String | — | 8 种强调色 |
+| `pureBlackDark` | Bool | — | 纯黑深色模式 |
+| `uiDensity` | String | — | `compact` / `comfortable` / `spacious` |
+| `cornerStyle` | String | — | `small` / `medium` / `large` / `xlarge` |
+| `motionMode` | String | — | `system` / `reduced` / `full` |
+| `showAdvancedHome` | Bool | — | 首页显示高级选项 |
+| `highContrast` | Bool | — | 高对比度 |
+| `textScale` | String | — | `normal` / `large` / `xlarge` |
+| `predictiveBackEnabled` | Bool | — | 预测式返回 |
+| `disclaimerAccepted` | Bool | `false` | 免责声明是否已接受 |
+
+> 外观设置页已删除，这些项仍在 `SettingsStore` 里且有默认值，
+> 但设置列表里没有入口。`MainActivity` 仍读取它们来构建主题。
+
+## 返回数量限制
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `defaultLimit` | Int | — | 通用返回条数 |
+| `stringLimit` | Int | — | 字符串返回条数 |
+| `disasmLimit` | Int | — | 反汇编指令数 |
+| `disasmMaxBytes` | Int | — | 反汇编字节上限 |
+| `hexdumpMaxBytes` | Int | — | hexdump 字节上限 |
+| `defaultDisasmBytes` | Int | — | 默认反汇编窗口 |
+| `toolResultMaxChars` | Int | — | 工具结果字符上限 |
+
+## 原生后端
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `nativeBackend` | String | — | 活跃 native 后端 |
+| `emulationEnabled` | Bool | — | Unidbg 模拟执行开关 |
+| `fridaPort` | Int | `27042` | Frida 桥接端口 |
+| `disasmPseudoFallback` | Bool | — | 反汇编失败时用伪代码回退 |
+
+## 导出
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `outputConflictStrategy` | String | `"rename"` | `rename` / `overwrite` / `skip` |
+| `writePatchReport` | Bool | `true` | 生成 patch report sidecar |
+| `buildCopyToWorkDir` | Bool | `false` | 构建产物镜像到工作目录 |
+| `maxBuildOutputs` | Int | — | 产物列表上限 |
+| `defaultBuildVariants` | Int | `8` | 单次多输出变体上限 |
+| `maxPatchBytes` | Int | 1 MiB | 单次补丁字节上限 |
+
+## 编辑与审计
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `editStrictValidation` | Bool | `true` | 严格校验（expectHex / matchText 必须匹配） |
+| `editCheckDeep` | Bool | — | 深度检查 |
+| `autoSnapshotBeforeEdit` | Bool | — | 编辑前自动快照 |
+| `editAutoPersist` | Bool | — | 编辑自动持久化 |
+| `auditLogEnabled` | Bool | — | 审计日志开关 |
+| `auditPersist` | Bool | — | 审计落盘 |
+| `maxSnapshots` | Int | `20` | 单会话快照上限 |
+| `maxAudits` | Int | `50` | 审计文件上限 |
+| `maxCompareRanges` | Int | — | diff 范围上限 |
+
+## 工具暴露
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `leanTools` | Bool | `true` | lean 模式（只广告 CORE + 网关 + meta） |
+| `adaptiveLeanTools` | Bool | `true` | 按调用热度自动晋级 EXTRA |
+| `disabledTools` | String | — | 禁用工具列表（逗号分隔） |
+| `includeCategoryInSchema` | Bool | — | schema 里带 category 字段 |
+| `collectToolStats` | Bool | — | 收集调用统计 |
+| `toolStatsPersist` | Bool | — | 统计落盘 |
+| `toolCallRateLimitPerMin` | Int | `0` | 每分钟调用上限（0 = 不限） |
+| `maxConcurrentTools` | Int | `1` | 重型工具并发数 |
+
+## 扫描
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `indexCacheEnabled` | Bool | — | 索引缓存 |
+| `parseMetadataInList` | Bool | — | 列表时解析元数据 |
+| `scanApks` | Bool | `true` | 扫描 APK |
+| `scanSubdirectories` | Bool | `true` | 扫描子目录 |
+| `maxScanDepth` | Int | `8` | 扫描深度 |
+| `skipFilesLargerThanMb` | Int | `512` | 跳过超大文件 |
+
+## 日志
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `logMaxLines` | Int | `500` | 环形缓冲行数 |
+| `logLevel` | String | — | 日志级别 |
+
+## 更新
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `autoCheckUpdates` | Bool | — | 自动检查更新 |
+| `updateChannel` | String | — | 更新通道 |
+
+## AI（子代理）
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `aiProvider` | String | — | 供应商标识 |
+| `aiEndpoint` | String | — | API 地址 |
+| `aiApiKey` | String | — | API Key |
+| `aiModel` | String | — | 模型 ID |
+| `aiTemperature` | Float | — | 温度 |
+| `aiMaxIterations` | Int | — | 最大迭代 |
+| `aiHistorySoftLimit` | Int | — | 历史压缩阈值 |
+| `aiCustomHeadersJson` | String | — | 自定义 headers |
+| `aiCustomBodyJson` | String | — | 自定义 body |
+| `aiSystemPrompt` | String | — | 系统提示词 |
+| `aiToolSchemaMode` | String | `"full"` | `full` / `skills_like` |
+| `subAgentEnabled` | Bool | — | 子代理开关 |
+| `subAgentMaxDepth` | Int | `1` | 嵌套深度上限（最大 2） |
+| `subAgentMaxConcurrent` | Int | `2` | 并发子代理数 |
+| `subAgentMaxIterations` | Int | `12` | 单子代理迭代上限 |
+| `subAgentMaxPerRun` | Int | `4` | 单次会话配额 |
+
+## 已废弃（保留兼容）
+
+| 键 | 状态 |
+| --- | --- |
+| `treeUri` | SAF 工作目录，魔改后仅 `open_url` 兼容用 |
+| `useDefaultWorkDir` | 无 UI 入口 |
+| `defaultWorkDirPath` | 无 UI 入口 |
+| `apkMcpUrl` / `apkMcpToken` / `apkMcpConfigs` | APK MCP 桥接已移除 |
+| `apkMcpAutoProbe` / `apkMcpMergeTools` / `apkMcpProbeTimeoutMs` | 同上 |
+| `externalProbeUrl` | 公网探测，隧道已移除 |
+| `crashReportEnabled` / `crashReportEndpoint` / `crashReportConsentAnswered` | 上报已移除 |
+| `publicReachability` 相关 | 隧道已移除 |
+
+> 这些键仍能读写，但代码里没有消费方。清理时需要同时检查
+> `SettingsStore` 的 import / export 逻辑（`applyStr` / `applyBool` 等）。
+
+## 迁移
+
+`SettingsStore` 的 `init` 块里做一次性迁移：
+
+```kotlin
+// 1) 移除已废弃的 APK MCP 默认配置
+if (!prefs.getBoolean("apkNpBridgeRemoved", false)) { ... }
+
+// 2) 本地与局域网直连免 key
+if (!prefs.getBoolean("lanNoAuthMigrated_v1", false)) {
+    prefs.edit()
+        .putBoolean("authEnabled", false)
+        .putBoolean("lanNoAuthMigrated_v1", true)
+        .apply()
+}
+```
+
+**迁移原则**：迁移永远不能把安全设置**打开**到更宽松的状态而用户不知情。
+上面的免 key 迁移是有意的产品决策（用户明确要求），并记录了迁移标记。
+
+## 备份与恢复
+
+`SettingsBackupRestorePage` 通过 SAF 导出/导入 JSON。敏感字段（`accessToken` /
+`aiApiKey`）在导出时会走 `BackupCrypto` 加密。
+
+## 变更记录
+
+| 日期 | 内容 |
+| --- | --- |
+| 2026-11-07 | 建立文档；标注已废弃但仍存在的设置项 |

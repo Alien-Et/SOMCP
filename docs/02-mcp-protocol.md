@@ -1,0 +1,195 @@
+# 02 · MCP 协议层
+
+对应源码：`app/src/main/java/com/soreverse/mcp/mcp/McpHttpServer.kt`（1,501 行）
+
+## 传输形态
+
+Ktor CIO HTTP 服务器，Streamable HTTP 传输，同时兼容旧版 SSE。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/mcp` | JSON-RPC 请求（主通道） |
+| `GET` | `/mcp` | SSE 流（服务端推送） |
+| `GET` | `/sse` | 旧版 SSE 端点 |
+| `GET` | `/health` | 健康检查（不需要 JSON-RPC 封装） |
+
+响应头 `Content-Type: text/event-stream`，每条消息以 `event: message` +
+`data: <json>` 的形式返回。
+
+## 启动与绑定
+
+```kotlin
+McpHttpServer(context, port, host)
+```
+
+- `port` 来自 `SettingsStore.port`，默认 `8000`，范围限制 `1024..65535`
+- `host` 来自 `SettingsStore.bindHost`，默认 `0.0.0.0`（局域网可达），
+  可设为 `127.0.0.1`（仅本机 / adb forward）
+
+## 鉴权
+
+```kotlin
+private fun authorized(request): Boolean {
+    if (!settings.authEnabled) return true       // 出厂默认关闭
+    val auth = request.header("Authorization").orEmpty()
+    val bearer = auth.removePrefix("Bearer").trim()
+    // 也接受 ?token=<token> 查询参数
+}
+```
+
+- `authEnabled` 出厂默认 **`false`**（本分支改动，上游默认开启）
+- 首次安装会执行 `lanNoAuthMigrated_v1` 迁移，强制关闭 token
+- 开启时可用两种方式携带 token：`Authorization: Bearer <token>` 或
+  `?token=<token>` 查询参数
+- 从关闭切到开启时，`SettingsStore` 会自动轮换 `accessToken`，
+  使之前泄露的旧 token 立即失效
+
+## JSON-RPC 方法
+
+| 方法 | 说明 |
+| --- | --- |
+| `initialize` | 握手，返回 `serverInfo` + `_meta`（含 `fullToolCount`、`provenance`） |
+| `tools/list` | 列工具，受 lean 模式影响 |
+| `tools/call` | 调用工具 |
+| `ping` | 心跳 |
+| `notifications/*` | 通知（无需响应） |
+
+`initialize` 的 `_meta` 是溯源证据：
+
+```json
+{
+  "builtInToolsAlwaysAdvertised": false,
+  "fullToolCount": 81,
+  "provenance": {
+    "project": "SOMCP",
+    "license": "AGPL-3.0-only",
+    "upstream": "https://github.com/bilieebiliee1-design/SOMCP",
+    "copyright": "Copyright (C) 2026 SOMCP authors",
+    "applicationId": "com.soreverse.mcp",
+    "version": "1.0.23"
+  }
+}
+```
+
+## 并发闸门
+
+重型工具（`so_open` / `search_bytes` / `analyze_*` / `read_disasm` 等）受
+`Semaphore` 保护：
+
+```kotlin
+private var heavyGate: Semaphore = Semaphore(1)   // 默认 1 个 permit
+```
+
+- permit 数来自 `SettingsStore.maxConcurrentTools`，可通过
+  `reconfigureHeavyGate()` 热更新
+- 抢不到 permit 时立即返回：
+
+```json
+{"ok": false, "error": {"code": "SERVER_BUSY",
+ "message": "Another analysis task is running. Retry the same call shortly."}}
+```
+
+- **重要**：`cancel` / `status` / `prune` 类工具**不参与**闸门。否则当
+  permit 被长任务占满时，连取消请求都抢不到，无法自救。
+
+## 速率限制
+
+独立的令牌桶，与并发闸门互不影响：
+
+- 阈值来自 `SettingsStore.toolCallRateLimitPerMin`（0 = 不限）
+- 超限返回 `RATE_LIMITED`
+
+## 工具调用编排
+
+`tools/call` 的完整流水线：
+
+```
+解析 JSON-RPC
+  ↓
+查 ToolCatalog.byName
+  ↓ 找不到 → UNKNOWN_ACTION
+  ↓
+检查 disabledTools 黑名单
+  ↓ 命中 → TOOL_DISABLED
+  ↓
+速率限制检查
+  ↓ 超限 → RATE_LIMITED
+  ↓
+重型工具抢 heavyGate
+  ↓ 抢不到 → SERVER_BUSY
+  ↓
+ToolStats 计数（可选持久化）
+  ↓
+handler.invoke(engine, args, workDirectory)
+  ↓
+截断到 toolResultMaxChars
+  ↓
+包成 MCP content 信封（isError 由 ok 字段决定）
+  ↓
+释放 heavyGate
+```
+
+## 工具结果信封
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "isError": false,
+    "content": [
+      {"type": "text", "text": "{\"ok\":true, ...}"}
+    ]
+  }
+}
+```
+
+注意 `content[0].text` 是**字符串化的 JSON**，客户端需要二次解析。
+
+## lean 模式
+
+默认开启（`SettingsStore.leanTools = true`），只广告：
+
+- 全部 `ToolClass.CORE`（28 个）
+- 全部 `lowlevel` 网关（11 个，它们是入口而非证据调用，藏起来等于让能力不可达）
+- `meta_info`
+
+其余 `ToolClass.EXTRA`（50 个）通过 `meta_info(action=describe)` 按需发现。
+
+`adaptiveLeanTools = true` 时，会根据 `ToolStats` 的历史调用热度自动把高频
+EXTRA 工具晋级到 `tools/list`。
+
+## 健康检查
+
+`GET /health` 返回运行时信息，用于确认设备上跑的是不是最新 APK：
+
+```json
+{
+  "version": "1.0.23",
+  "abi": "arm64-v8a",
+  "nativeLibraryDir": "/data/app/.../lib/arm64",
+  "librzNative": {"size": 64344368, "mtime": ..., "sha256_16": "..."},
+  "backends": {
+    "rizin": {"available": true, "loadStatus": "loaded"},
+    "lief": {"available": true, "loadStatus": "loaded"},
+    "unidbg": {"available": true}
+  }
+}
+```
+
+## 请求体上限
+
+`SettingsStore.maxRequestKb`（默认 512 KiB）限制单次请求体大小，
+超限返回 `BAD_REQUEST`。大 payload（如 `edit_text` 的整段 smali）需要注意。
+
+## 已知限制
+
+- 不支持 MCP 的 `resources` / `prompts` 能力，只有 `tools`
+- 不支持 WebSocket 传输
+- 单实例：同一端口只能跑一个 `McpHttpServer`
+
+## 变更记录
+
+| 日期 | 内容 |
+| --- | --- |
+| 2026-11-07 | 建立文档；补充并发闸门排除 cancel/status 的原因 |

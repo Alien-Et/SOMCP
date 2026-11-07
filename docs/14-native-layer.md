@@ -1,0 +1,193 @@
+# 14 · 原生层（C++ / JNI）
+
+对应源码：`app/src/main/cpp/`（12 个文件，6,112 行）、`nativecore/`（2 个文件）
+
+## 文件清单
+
+| 文件 | 行数 | 产物 | 职责 |
+| --- | --- | --- | --- |
+| `native_probe.cpp` | 2,613 | 编译进 `librz_native.so` | 完整性探测、设备指纹、SHA-256 |
+| `rizin_core.cpp` | 1,648 | `librz_native.so` | Rizin JNI（14 个导出） |
+| `license_notice.h` | 722 | 头文件 | 许可证声明字符串 |
+| `lief_elf.cpp` | 540 | 编译进 `librz_native.so` | LIEF JNI |
+| `xanso_jni.cpp` | 201 | `libxanso_native.so` | xAnSo section 重建 |
+| `sha256_impl.h` | 97 | 头文件 | SHA-256 实现 |
+| `blutter_bridge.cpp` | 92 | `libblutter_bridge.so` | Blutter 原生桥 |
+| `reporting_key.h` | 83 | 头文件 | 上报密钥 |
+| `pin_decode.h` | 83 | 头文件 | pin 解码 |
+| `zstd_compat_stub.cpp` | 23 | 编译进 `librz_native.so` | zstd 兼容桩 |
+| `rizin_stub.cpp` | 10 | 空桩 | Rizin 产物缺失时的 fallback |
+| `CMakeLists.txt` | — | — | 构建定义 |
+
+## CMake 目标
+
+```cmake
+add_library(rz_native SHARED ${RZ_SOURCES})       # → librz_native.so
+add_library(blutter_bridge SHARED blutter_bridge.cpp)  # → libblutter_bridge.so
+add_library(xanso_native SHARED ...)              # → libxanso_native.so
+```
+
+### rz_native 的两种形态
+
+**完整构建**（`rizin-build/` 存在）：
+
+```cmake
+target_link_libraries(rz_native PRIVATE ${LIEF_LIB})
+target_link_libraries(rz_native PRIVATE ${RZ_SHARED_LIBS} log m z dl c)
+foreach(archive ${RZ_ARCHIVES})
+    target_link_libraries(rz_native PRIVATE
+        "-Wl,--whole-archive" ${archive} "-Wl,--no-whole-archive")
+endforeach()
+```
+
+`--whole-archive` 把 27 个 `librz_*.a` 全部链接进来 → **61 MB**。
+
+**stub 构建**（产物缺失）：
+
+```cmake
+set(RZ_SOURCES rizin_stub.cpp)   # 10 行的空实现
+```
+
+→ **2.9 MB**，运行时 `RIZIN_UNAVAILABLE`。
+
+### 依赖的外部路径
+
+```cmake
+RIZIN_BUILD_ROOT = <repo>/rizin-build
+LIEF_BUILD_ROOT  = <repo>/third_party/lief-build
+XANSO_ROOT       = <repo>/third_party/xAnSo-src
+RIZIN_SRC        = <repo>/third_party/rizin-src
+```
+
+这四个都在 `.gitignore` 里，换机器必须重建。
+
+## JNI 导出符号
+
+### RizinNativeEngine（`rizin_core.cpp`）
+
+```text
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzSelfTest
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzAnalyze
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzFunctions
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzCfg
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzXrefs
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzDisassemble
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzAssemble
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzCommand
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzSearchBytes
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzScanCrypto
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzEsilStep
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzDiff
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzConfigureGhidra
+Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzDecompile
+```
+
+### LiefEngine（`lief_elf.cpp`）
+
+```text
+nativeParse        nativeParseAny       nativePatchAddress
+nativeBuildSections nativeFixSections   nativeGetSectionContent
+nativeSetSectionContent  nativeAddExportedFunction  nativeRemoveSymbol
+nativeRecoverElf   nativeAvailable
+```
+
+### NativeProbe（`native_probe.cpp`）
+
+```text
+nativeComputeSha256Hex        nativeGetPinnedFingerprint
+nativeGetReportingKey         nativeMatchPackageId
+nativeProbeArchive            nativeReadEnvelope
+nativeReadEnvelopeV234        nativeVerifyBlock
+```
+
+### XAnSoEngine（`xanso_jni.cpp`）
+
+```text
+nativeAvailable               nativeBuildSections
+nativeRecoverElf64Sections
+```
+
+## rzSelfTest 的作用
+
+`System.loadLibrary("rz_native")` 成功后立刻跑：
+
+```c
+// 1. 设置 asm.arch = arm
+// 2. 解码一条 ARM 探针指令（ret / mov r0,r0）
+// 3. 失败则返回错误串
+```
+
+失败时 `meta_info(capabilities)` 的 `rizin.status` 标成 `failed: ...`，
+而不是假装可用。这是「native 库真的能用」的唯一可信判据。
+
+## NativeEngine 抽象
+
+`nativecore/NativeEngine.kt` 是纯接口，`mcp/` 与 `engine/` 只依赖它：
+
+```kotlin
+interface NativeEngine {
+    fun disassemble(bytes: ByteArray, address: Long, count: Int, mode: String): String
+    fun assemble(asm: String, address: Long): ByteArray?
+    fun analyze(...): JSONObject
+    // ...
+    companion object {
+        val active: NativeEngine
+        fun select(backend: String)
+    }
+}
+```
+
+这是**依赖倒置的单一接缝** —— 换后端不需要动任何调用点。
+
+## 严格 native 链接
+
+Release 构建启用「禁止非系统未解析符号」：
+
+```bash
+./verify-native-libs.ps1    # Windows
+```
+
+检查 Rizin / ZSTD / LIEF 等非系统符号是否已在 APK 自带库内解析完毕。
+未解析符号会导致 `dlopen failed: cannot locate symbol ...`。
+
+## JNI keep 规则
+
+R8 会重命名类和方法，但 JNI 符号名是固定的。`proguard-rules.pro` 必须保留：
+
+```proguard
+-keep class com.soreverse.mcp.nativecore.RizinNativeEngine { *; }
+-keep class com.soreverse.mcp.engine.LiefEngine { *; }
+-keep class com.soreverse.mcp.nativecore.NativeProbe { *; }
+-keep class com.soreverse.mcp.engine.XAnSoEngine { *; }
+-keep class com.soreverse.mcp.blutter.NativeBlutterBridge { *; }
+```
+
+漏一个就会 `UnsatisfiedLinkError`。
+
+## 构建脚本
+
+| 脚本 | 用途 |
+| --- | --- |
+| `build-native-android.sh` | Linux/CI：Rizin + LIEF 全 4 ABI |
+| `build-rizin-all.ps1` | Windows：Rizin |
+| `build-lief-all.ps1` | Windows：LIEF |
+| `build-unidbg-native.sh` | capstone / keystone / unicorn |
+| `build-rz-ghidra-android.sh` | rz-ghidra 插件 |
+
+### CMake 4.x 兼容
+
+CMake 4.x 移除了 `< 3.5` 的兼容，Rizin 和 unidbg 的上游 CMakeLists 会报错。
+两个脚本都做了处理：
+
+```bash
+-DCMAKE_POLICY_VERSION_MINIMUM=3.5
+# 以及幂等 sed 修：
+#   cmake_policy(SET CMP0048 OLD)  →  NEW
+#   cmake_minimum_required(VERSION 2.x)  →  VERSION 3.5
+```
+
+## 变更记录
+
+| 日期 | 内容 |
+| --- | --- |
+| 2026-11-07 | 建立文档；列出全部 JNI 导出与 stub 判据 |

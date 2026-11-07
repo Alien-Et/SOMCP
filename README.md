@@ -33,6 +33,38 @@ LIEF 重写与修复、补丁会话、构建导出、Flutter AOT 分析、JNI �
 
 ---
 
+## 项目文档
+
+完整的技术文档在 [`docs/`](docs/)，按项目结构分类编号（01–19）：
+
+| 编号 | 内容 |
+| --- | --- |
+| [01](docs/01-overview.md) | 项目总览与分层架构 |
+| [02](docs/02-mcp-protocol.md) | MCP 协议层（HTTP / 鉴权 / 并发闸门） |
+| [03](docs/03-tool-catalog.md) | 81 个工具的分类清单 |
+| [04](docs/04-engine-runtime.md) | 引擎运行时门面 |
+| [05](docs/05-root-and-paths.md) | Root 通道与路径解析 |
+| [06](docs/06-elf-core.md) | ELF 解析与 15 项审计 |
+| [07](docs/07-rizin.md) | Rizin 后端 |
+| [08](docs/08-lief.md) | LIEF 后端 |
+| [09](docs/09-edit-session.md) | 编辑会话与补丁 |
+| [10](docs/10-apk-analysis.md) | APK 分析与签名审计 |
+| [11](docs/11-flutter-blutter.md) | Flutter / Blutter |
+| [12](docs/12-dynamic-analysis.md) | 动态分析（Unidbg / Frida） |
+| [13](docs/13-signature-tools.md) | 特色分析工具（JNI / 加固 / 混淆 / 解密） |
+| [14](docs/14-native-layer.md) | 原生层（C++ / JNI） |
+| [15](docs/15-ui.md) | UI 层 |
+| [16](docs/16-settings.md) | 设置项参考 |
+| [17](docs/17-build-ci.md) | 构建与 CI |
+| [18](docs/18-errors-and-dirs.md) | 错误码、数据目录与排障 |
+| [19](docs/19-changelog.md) | 变更总览与总结 |
+
+> **文档与代码同步是硬性要求**：每次改动项目，对应编号的文档必须跟着改，
+> 一轮改动结束后更新 `19-changelog.md`。详见 [`docs/README.md`](docs/README.md)
+> 的维护规则。
+
+---
+
 ## 核心特性
 
 ### 纯 MCP 服务器

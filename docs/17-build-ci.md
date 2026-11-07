@@ -1,0 +1,312 @@
+# 17 · 构建与 CI
+
+对应源码：`app/build.gradle.kts`、`gradle/wrapper/`、`.github/workflows/`（17 个）
+
+## 环境要求
+
+| 项 | 版本 |
+| --- | --- |
+| JDK | 17 |
+| Gradle | 9.6.1 |
+| Android SDK | 36 |
+| Android NDK | `29.0.14206865` |
+| CMake | 3.22.1 |
+| meson / ninja | 构建 Rizin 用 |
+
+## 版本号
+
+```kotlin
+android {
+    compileSdk = 36
+    ndkVersion = "29.0.14206865"
+    defaultConfig {
+        applicationId = "com.soreverse.mcp"
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 24
+        versionName = "1.0.23"
+    }
+}
+```
+
+改版本时三处都要动：`versionCode`、`versionName`、`README.md` 的参数表。
+
+## 主要依赖
+
+| 依赖 | 用途 |
+| --- | --- |
+| `androidx.compose:compose-bom:2026.06.01` | Compose |
+| `androidx.compose.material3:material3` | M3 组件 |
+| `androidx.activity:activity-compose:1.13.0` | Activity + Compose |
+| `io.ktor:ktor-server-core-jvm:3.5.1` | HTTP 服务 |
+| `io.ktor:ktor-server-cio-jvm:3.5.1` | CIO 引擎 |
+| `com.squareup.okhttp3:okhttp:5.4.0` | HTTP 客户端 |
+| `okhttp-sse:5.4.0` | SSE 客户端 |
+| `kotlinx-serialization-json:1.11.0` | JSON |
+| `com.github.rikkahub:markdown` | Markdown 渲染 |
+| `org.jsoup:jsoup:1.23.2` | HTML 解析 |
+| `jna:5.10.0@aar` | JNA |
+| `unidbg-api` / `unidbg-android` / `capstone` / `keystone`（本地 jar） | Unidbg |
+
+`app/libs/` 下 4 个 patched jar 是**本地文件依赖**，不在 Maven 上。
+
+## c++_static 的原因
+
+```kotlin
+cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti", "-Wall", "-Wextra")
+// c++_static keeps every self-built .so self-contained
+```
+
+加固（VMP / Dex2C）重打包可能把 `libc++_shared.so` 从 `lib/` 里删掉。
+此时若 `librz_native.so` 是 `c++_shared` 链接的，`dlopen` 会报
+`cannot locate symbol _ZTVNSt6__ndk1...` 直接崩启动。
+
+## ABI 分包
+
+```kotlin
+splits {
+    abi {
+        isEnable = true
+        reset()
+        include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+        isUniversalApk = true
+    }
+}
+excludes += setOf("lib/armeabi/**", "lib/mips/**", "lib/mips64/**")
+```
+
+NDK 29 已不支持 `armeabi`，universal 包如果带上死目录会导致 Dex2C 步骤
+`abortOnError`。
+
+## Release 优化
+
+- R8 代码压缩与混淆（`isMinifyEnabled`）
+- Android 资源压缩（`isShrinkResources`）
+- ABI 分包 + universal 包
+- v1/v2/v3/v4 APK 签名
+- 严格 native 链接（`verify-native-libs`）
+- JNI keep 规则（见 `14-native-layer.md`）
+
+## 签名
+
+`signingConfigs.release` 优先读环境变量（CI 用），fallback 到本地 keystore。
+
+CI 的 5 个 secrets：
+
+| Secret | 内容 |
+| --- | --- |
+| `KEYSTORE` | base64 编码的 JKS |
+| `ALIAS` | key alias |
+| `ALIAS_PASSWORD` | key 密码 |
+| `PASSWORD` | store 密码 |
+| `TM` | 时间戳 / 辅助字段 |
+
+`LRP_API_KEY` 可选（LLM release notes 用）。
+
+keystore 恢复的关键是**去空白**：
+
+```bash
+printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > release/so-reverse-mcp-release.jks
+keytool -list -keystore release/so-reverse-mcp-release.jks ...
+```
+
+漏了 `tr -d '[:space:]'` 会 `base64: invalid input`。
+
+## Workflow 清单
+
+| 文件 | name | 触发 | 用途 |
+| --- | --- | --- | --- |
+| `build.yml` | Build & Sign APK | manual / push | 全量构建 + 签名 + artifact |
+| `release.yml` | Release | tag / manual | 构建 + 发布 GitHub Release |
+| `test.yml` | Test | push / PR | 纯 Gradle 测试（不跑原生） |
+| `test-v2.yml` ~ `test-v11.yml` | Test vN | push / PR | 分片测试（v5+ 会跑原生构建） |
+| `cleanup-stale-labels.yml` | Cleanup Stale LLM Labels | schedule | 清理 LLM 标签 |
+| `close-linked-issues.yml` | Close Linked Issues on Merge | PR merge | 自动关 issue |
+| `issues-auto-reply.yml` | LLM Auto-Reply Issues | issue | LLM 自动回复 |
+| `pr-auto-review.yml` | LLM Auto-Review PRs | PR | LLM 自动审阅 |
+
+## build.yml 的步骤
+
+```text
+1.  Checkout
+2.  Init submodules
+3.  Set up JDK 17 (temurin)
+4.  Set up Gradle 9.6.1
+5.  Set up Android SDK
+6.  Install SDK packages
+7.  Install native build tools (meson ninja gcc g++ pkg-config cmake)
+8.  Clone Rizin source (latest release)   ← 自动取最新 tag
+9.  Build native backends (Rizin + LIEF)
+10. Build Unidbg native libs (capstone/keystone/unicorn)
+11. Build rz-ghidra plugin (libcore_ghidra.so)
+12. Verify rz-ghidra plugin in jniLibs
+13. Restore release signing keystore
+14. Build release APKs
+15. Verify and ensure v2/v3 APK signing
+16. Wipe signing artifacts
+17. Upload APK
+```
+
+### SDK 包
+
+```yaml
+packages: |
+  platforms;android-36
+  build-tools;36.0.0
+  ndk;29.0.14206865
+  cmake;3.22.1
+```
+
+`cmake;3.22.1` 必须装 SDK 版本 —— runner 自带的 CMake 可能是 4.x，
+会触发 Rizin / unidbg 的 CMake policy 报错。
+
+### Rizin 自动取最新
+
+```bash
+LATEST_TAG=$(git ls-remote --tags --sort=-v:refname https://github.com/rizinorg/rizin.git \
+  | grep -oE 'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 | sed 's#refs/tags/##')
+```
+
+10 个 workflow 都改成了这个写法（`build.yml` / `release.yml` / `test-v5..v11`）。
+`test.yml` / `test-v2..v4` 没有 clone 步骤，未改。
+
+### Unidbg native 的 32 位处理
+
+```yaml
+for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+  bash build-unidbg-native.sh --abi $abi
+done
+# 64 位需要 unicorn
+for abi in arm64-v8a x86_64; do
+  test -f app/src/main/jniLibs/$abi/libunicorn.so
+done
+# 32 位必须没有 unicorn
+for abi in armeabi-v7a x86; do
+  test ! -f app/src/main/jniLibs/$abi/libunicorn.so
+done
+```
+
+### CMake 4.x 兼容
+
+`build-unidbg-native.sh` 和 `build-rz-ghidra-android.sh` 都加了：
+
+```bash
+-DCMAKE_POLICY_VERSION_MINIMUM=3.5
+```
+
+`build-unidbg-native.sh` 的 `build_one` 里还有幂等 sed：
+
+```bash
+sed -i 's/cmake_policy(SET CMP0048 OLD)/cmake_policy(SET CMP0048 NEW)/' CMakeLists.txt
+sed -i 's/cmake_minimum_required(VERSION 2\.[0-9]*)/cmake_minimum_required(VERSION 3.5)/' CMakeLists.txt
+```
+
+这会**就地修改 submodule**，所以主仓库常显示 `third_party/zhkl-capstone-src`
+dirty —— 属预期，不要提交。
+
+## release.yml
+
+在 `build.yml` 基础上多了：
+
+- 缓存原生后端（`Cache native backends`）
+- Build Blutter runners（best-effort）
+- 生成 release notes（LLM，可 fallback 到 commit 列表）
+- 重命名 APK 并生成 `SHA256SUMS`
+- `softprops/action-gh-release@v2` 上传
+
+### 资产命名
+
+```bash
+VERSION="${{ inputs.tag || github.ref_name }}"
+VERSION="${VERSION#v}"
+cp "$f" "release/SOMCP-${VERSION}-${name}.apk"
+(cd release && sha256sum SOMCP-*.apk > SHA256SUMS)
+```
+
+产物名：
+
+```text
+SOMCP-1.0.23-arm64-v8a.apk
+SOMCP-1.0.23-armeabi-v7a.apk
+SOMCP-1.0.23-x86.apk
+SOMCP-1.0.23-x86_64.apk
+SOMCP-1.0.23-universal.apk
+SHA256SUMS
+```
+
+### workflow_dispatch 兜底
+
+```yaml
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: false
+```
+
+所有 `github.ref_name` 都改成 `inputs.tag || github.ref_name`。
+
+**为什么需要**：仓库曾经是 fork，fork 期间 tag push 不触发任何 workflow。
+即使 `Remove fork network` 之后，用 PAT 推的 tag 也可能不被识别为 push 事件。
+手动 dispatch 是最可靠的兜底。
+
+## 本地构建
+
+```bash
+# 1) Rizin 源码（非 submodule）
+git clone --depth 1 --branch <latest-tag> https://github.com/rizinorg/rizin.git third_party/rizin-src
+
+# 2) 原生依赖
+bash build-native-android.sh        # Rizin + LIEF
+
+# 3) Unidbg native（可选，要 emulate_* 才需要）
+bash build-unidbg-native.sh --abi arm64-v8a
+
+# 4) 打包
+./gradlew :app:assembleDebug
+```
+
+### Gradle 增量缓存坑
+
+改完 Kotlin 后 `assembleDebug` 报成功但 dex 里没有新代码 —— 遇到过多次。
+**关键验证一律加 `--rerun-tasks`**：
+
+```bash
+./gradlew :app:assembleDebug --rerun-tasks
+```
+
+验证新代码是否进包：
+
+```bash
+unzip -p app/build/outputs/apk/debug/app-arm64-v8a-debug.apk classes3.dex > /tmp/d.dex
+grep -qa "新增的字符串常量" /tmp/d.dex && echo OK
+```
+
+### CMake 缓存坑
+
+改完 native 代码后如果只删 `app/build/intermediates/cxx`，CMake configure
+指纹没变，会直接链接旧的 stub。必须：
+
+```bash
+rm -rf app/.cxx app/build/intermediates/cxx
+./gradlew :app:assembleDebug --rerun-tasks
+```
+
+## 产物体积参考
+
+| 产物 | 大小 |
+| --- | --- |
+| `app-arm64-v8a-release.apk` | ~55 MB |
+| `app-universal-release.apk` | ~131 MB |
+| 本地 debug arm64 | ~70 MB |
+| `librz_native.so`（完整） | 64,344,368 字节 |
+| `librz_native.so`（stub） | 2.9 MB |
+
+## 变更记录
+
+| 日期 | 内容 |
+| --- | --- |
+| 2026-11-07 | 建立文档；记录 tr -d 去空白、CMake 4.x 兼容、Gradle 缓存坑 |
