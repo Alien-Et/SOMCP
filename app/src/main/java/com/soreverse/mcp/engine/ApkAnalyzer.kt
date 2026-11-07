@@ -1,6 +1,8 @@
 package com.soreverse.mcp.engine
 
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
 import java.security.MessageDigest
 import java.util.zip.ZipInputStream
 import org.json.JSONArray
@@ -25,6 +27,101 @@ internal object ApkAnalyzer {
         val maxParsedEntryBytes: Int = 1024 * 1024 * 1024,
         val maxParsedTotalBytes: Long = 8L * 1024L * 1024L * 1024L
     )
+
+    /**
+     * 【魔改】大 APK 流式解析入口：不把整个文件读进 ByteArray（386MB 包
+     * 一次性 readBytes() 会 OOM/IO_ERROR）。ZIP 条目用 FileInputStream 逐个读，
+     * sha256 流式计算，Flutter 检测走 inspectApk(File) 重载。
+     */
+    fun analyzeFile(file: File, path: String, entryLimit: Int, limits: Limits = Limits()): JSONObject {
+        val size = file.length()
+        if (size > MAX_INPUT_BYTES) {
+            throw ApkAnalysisLimitException(
+                "APK exceeds ${MAX_INPUT_BYTES / 1024 / 1024} MiB input limit"
+            )
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        val entries = JSONArray()
+        val nativeLibs = JSONArray()
+        val dexFiles = JSONArray()
+        val signatures = JSONArray()
+        val abis = linkedSetOf<String>()
+        var manifest = JSONObject().put("present", false)
+        var resourcesArsc = false
+        var totalEntries = 0
+        var parsedBytes = 0L
+        ZipInputStream(FileInputStream(file).buffered()).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                totalEntries++
+                if (totalEntries > limits.maxEntries) {
+                    throw ApkAnalysisLimitException(
+                        "APK contains more than ${limits.maxEntries} entries"
+                    )
+                }
+                val name = entry.name
+                if (entries.length() < entryLimit.coerceIn(1, 5000)) {
+                    entries.put(
+                        JSONObject()
+                            .put("name", name)
+                            .put("size", entry.size.takeIf { it >= 0 } ?: -1L)
+                            .put("compressedSize", entry.compressedSize)
+                            .put("directory", entry.isDirectory)
+                    )
+                }
+                if (!entry.isDirectory && name.matches(Regex("^lib/[^/]+/[^/]+\\.so$"))) {
+                    val abi = name.split('/')[1]
+                    abis.add(abi)
+                    nativeLibs.put(JSONObject().put("name", name).put("abi", abi))
+                }
+                if (!entry.isDirectory && name.endsWith(".dex", true)) {
+                    dexFiles.put(name)
+                }
+                if (!entry.isDirectory &&
+                    (name.startsWith("META-INF/") &&
+                        (name.endsWith(".RSA", true) ||
+                            name.endsWith(".DSA", true) ||
+                            name.endsWith(".EC", true) ||
+                            name.endsWith(".SF", true) ||
+                            name.endsWith("MANIFEST.MF", true))
+                        )
+                ) {
+                    signatures.put(name)
+                }
+                zip.closeEntry()
+            }
+        }
+        // 流式 sha256（DigestInputStream 风格，手动读块）
+        FileInputStream(file).buffered().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                digest.update(buf, 0, n)
+            }
+        }
+        val sha = digest.digest().joinToString("") { "%02x".format(it) }
+        val flutter = runCatching {
+            FlutterArtifactInspector.inspectApk(file).getJSONObject("flutter")
+        }.getOrDefault(JSONObject())
+        return JSONObject()
+            .put("path", path)
+            .put("size", size)
+            .put("sha256", sha)
+            .put("parser", "builtin_apk_zip_streaming")
+            .put("externalApkMcpRequired", false)
+            .put("entryCount", totalEntries)
+            .put("entriesTruncated", totalEntries > entries.length())
+            .put("entries", entries)
+            .put("nativeLibs", nativeLibs)
+            .put("dexFiles", dexFiles)
+            .put("signatures", signatures)
+            .put("abis", JSONArray(abis.toList()))
+            .put("manifest", manifest)
+            .put("resourcesArsc", resourcesArsc)
+            .put("flutter", flutter)
+            .put("parsedBytes", parsedBytes)
+    }
 
     fun analyze(bytes: ByteArray, path: String, entryLimit: Int, limits: Limits = Limits()): JSONObject {
         if (bytes.size.toLong() >

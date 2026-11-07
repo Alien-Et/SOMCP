@@ -303,6 +303,12 @@ internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSON
             path
         )
     }
+    // 【魔改】大 APK 走流式解析，避免 readBytes() 把整包读进内存导致
+    // OOM / IO_ERROR（实测 386MB BeautyPlus 包会挂）。阈值 64 MiB：
+    // 小包仍走原有 ByteArray 路径（含完整 AXML/Flutter 检测）。
+    if (local.isFile && local.length() > 64L * 1024L * 1024L) {
+        return@guarded ok(ApkAnalyzer.analyzeFile(local, path, entryLimit))
+    }
     val bytes = try {
         if (local.isFile) {
             // 【魔改】路径白名单已废除：普通文件直读，root 通道兜底
