@@ -254,29 +254,34 @@ object RootShell {
      */
     fun listFiles(dirPath: String): List<DirEntry> {
         if (!isAvailable()) return emptyList()
-        val r = exec("ls -la ${shellQuote(dirPath)} 2>/dev/null")
+        // 【魔改】不再解析 `ls -la`：Android toybox 的 `ls -la` 把日期拆成
+        // 「2026-11-07 13:56」两列，且部分 ROM 还会带额外列，旧代码按
+        // 固定的 9 列切分（parts[4]=size / parts[5]=mtime / parts[8]=name）
+        // 会全部落空，导致 root 扫描 list 永远返回空。
+        // 改用 `find <dir> -maxdepth 1` 拿直接子项路径，再用 `stat -c`
+        // 一次取回类型/大小/mtime，格式由我们自己控制，跨 ROM 稳定。
+        val q = shellQuote(dirPath)
+        // find 只列直接子项；紧接着用 stat 一次性把类型/大小/mtime 打出来
+        // （stat 支持多路径，避免每个文件起一次 su 进程）。
+        val r = exec(
+            "find $q -maxdepth 1 -mindepth 1 -print0 2>/dev/null | " +
+                "xargs -0 -r stat -c '%F|%s|%Y|%n' 2>/dev/null"
+        )
         if (!r.ok) return emptyList()
         val entries = mutableListOf<DirEntry>()
         for (raw in r.stdout.lineSequence()) {
             val line = raw.trimEnd()
             if (line.isBlank()) continue
-            if (line.startsWith("total ")) continue
-            // 典型行：-rw-r--r-- 1 u0_a123 u0_a123 12345 1793750336 name
-            val parts = line.split(Regex("\\s+"), limit = 9)
-            if (parts.size < 9) continue
-            val perms = parts[0]
-            if (perms.isEmpty()) continue
-            val isDir = perms.startsWith("d")
-            val isLink = perms.startsWith("l")
-            val size = parts[4].toLongOrNull() ?: 0L
-            val mtime = parts[5].toLongOrNull() ?: 0L
-            var name = parts[8]
-            if (isLink) {
-                name = name.substringBefore(" -> ")
-            }
+            // 格式：regular file|22016|1794030963|/abs/path/name
+            val fields = line.split('|', limit = 4)
+            if (fields.size < 4) continue
+            val path = fields[3]
+            val name = path.substringAfterLast('/')
             if (name == "." || name == "..") continue
-            val full = if (dirPath.endsWith("/")) "$dirPath$name" else "$dirPath/$name"
-            entries.add(DirEntry(name, full, isDir, size, mtime * 1000L))
+            val isDir = fields[0].equals("directory", ignoreCase = true)
+            val size = fields[1].toLongOrNull() ?: 0L
+            val mtimeSec = fields[2].toLongOrNull() ?: 0L
+            entries.add(DirEntry(name, path, isDir, size, mtimeSec * 1000L))
         }
         return entries
     }

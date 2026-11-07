@@ -67,13 +67,19 @@ internal fun EngineRuntime.listAvailableSos(prefix: String = "", limit: Int = 50
     // 【魔改】没有工作目录时，用 root 扫描常见 SO 目录
     val dir = workDir
     if (dir == null) {
+        // KernelSU/Magisk 按 App uid 授权；没在管理器里给本 App 开 root 时
+        // isAvailable() 会是 false，walkFiles 直接返回空 —— 明确回报状态，
+        // 免得 list 返回「rootMode:true 但 0 项」让人误以为扫描逻辑坏了。
+        val rootAvailable = RootShell.isAvailable()
         val roots = ROOT_SCAN_ROOTS
         val all = mutableListOf<SoSource>()
-        for (root in roots) {
-            if (all.size >= 2000) break
-            RootShell.walkFiles(root, listOf(".so"), maxDepth = 6) { e ->
-                if (all.size < 2000) {
-                    all.add(SoSource(e.path, "root_fs", e.name, e.size, e.modified, null))
+        if (rootAvailable) {
+            for (root in roots) {
+                if (all.size >= 2000) break
+                RootShell.walkFiles(root, listOf(".so"), maxDepth = 6) { e ->
+                    if (all.size < 2000) {
+                        all.add(SoSource(e.path, "root_fs", e.name, e.size, e.modified, null))
+                    }
                 }
             }
         }
@@ -98,9 +104,14 @@ internal fun EngineRuntime.listAvailableSos(prefix: String = "", limit: Int = 50
             .put("totalAvailableCount", filtered.size)
             .put("nextCursor", next)
             .put("rootMode", true)
+            .put("rootAvailable", rootAvailable)
             .put(
                 "usage",
-                "root scan (no work directory). Roots: ${ROOT_SCAN_ROOTS.joinToString()}."
+                if (rootAvailable) {
+                    "root scan (no work directory). Roots: ${ROOT_SCAN_ROOTS.joinToString()}."
+                } else {
+                    "ROOT NOT GRANTED: give com.soreverse.mcp superuser access in KernelSU/Magisk manager, then restart the app. Direct so_open(path=...) still works for readable paths."
+                }
             )
     }
 
