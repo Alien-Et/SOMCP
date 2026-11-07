@@ -725,7 +725,7 @@ internal fun EngineRuntime.openWorkspace(path: String, temporary: Boolean): Work
         )
     }
     val key = sourceKey(src).ifBlank { keyFallback }
-    workspaceBySourceKey[key]?.let { existingId -> workspaces[existingId]?.let { return it } }
+    workspaceBySourceKey[key]?.let { existingId -> touchWorkspace(existingId)?.let { return it } }
     // Stop before reading the whole SO into memory when the process heap cannot
     // safely hold it plus the parse copies — otherwise a large libapp.so on a
     // constrained device ends in an OutOfMemoryError instead of a clean error.
@@ -788,6 +788,8 @@ internal fun EngineRuntime.openWorkspace(path: String, temporary: Boolean): Work
         )
     workspaces[ws.id] = ws
     workspaceBySourceKey[key] = ws.id
+    // 【修复 B2】打开成功后立刻收敛常驻数量，避免连续 so_open 把堆吃穿。
+    evictWorkspacesIfNeeded()
     AppLog.i("Opened ${src.path} as ${ws.id}")
     return ws
 }

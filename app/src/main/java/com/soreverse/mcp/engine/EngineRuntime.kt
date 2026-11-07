@@ -44,6 +44,47 @@ internal class EngineRuntime(internal val context: Context) {
     internal val searchCache = ConcurrentHashMap<String, List<JSONObject>>()
     internal val workspaces = ConcurrentHashMap<String, Workspace>()
 
+    /**
+     * 【修复 B2】统一的 workspace 取用入口：命中即刷新 LRU 时间戳。
+     *
+     * 注意：这里必须直接读 `workspaces[id]`，不能再调 `touchWorkspace(id)`——
+     * 同名重载会解析成它自己，形成无限递归，编译期不报错，运行时 StackOverflowError。
+     */
+    internal fun touchWorkspace(id: String): Workspace? =
+        workspaces[id]?.also { it.lastAccessMillis = System.currentTimeMillis() }
+
+    /**
+     * 【修复 B2】常驻 workspace 上限。以前只有 so_close 才会 remove，连续
+     * so_open 多个大 SO 会一直累积（MemoryGuard 是 no-op，没有兜底），最终
+     * OutOfMemoryError 直接把 MCP 服务进程干掉。
+     */
+    internal fun evictWorkspacesIfNeeded() {
+        val excess = workspaces.size - MAX_OPEN_WORKSPACES
+        if (excess <= 0) return
+        // temporary 的 workspace 先走；同优先级按最久未访问淘汰。
+        val candidates = workspaces.values.sortedWith(
+            compareBy<Workspace> { if (it.temporary) 0 else 1 }
+                .thenBy { it.lastAccessMillis }
+        )
+        var removed = 0
+        for (victim in candidates) {
+            if (removed >= excess) break
+            if (workspaces.remove(victim.id, victim)) {
+                workspaceBySourceKey.entries.removeIf { it.value == victim.id }
+                removed++
+                AppLog.w(
+                    "Evicted workspace ${victim.id} (${victim.source.name})" +
+                        if (victim.temporary) " [temporary]" else ""
+                )
+            }
+        }
+    }
+
+    internal companion object {
+        /** 【修复 B2】同时保留的 workspace 数量上限。 */
+        const val MAX_OPEN_WORKSPACES = 8
+    }
+
     internal fun guarded(block: () -> JSONObject): JSONObject = try {
         block()
     } catch (error: CancellationException) {
@@ -145,7 +186,7 @@ internal class EngineRuntime(internal val context: Context) {
         onMissingSession: () -> T,
         block: (EditSession) -> T
     ): T {
-        val ws = workspaces[workspaceId] ?: return onMissingWorkspace()
+        val ws = touchWorkspace(workspaceId) ?: return onMissingWorkspace()
         val session = ws.edits[editSessionId] ?: return onMissingSession()
         session.lock.lock()
         try {

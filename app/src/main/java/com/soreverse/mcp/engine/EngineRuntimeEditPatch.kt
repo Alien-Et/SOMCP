@@ -1,5 +1,7 @@
 package com.soreverse.mcp.engine
 
+import com.soreverse.mcp.core.optText
+
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.ok
@@ -41,7 +43,7 @@ internal fun EngineRuntime.editHex(workspaceId: String, editSessionId: String, l
                 val edit = edits.getJSONObject(i)
                 val aliases = listOf("newHex", "hex", "bytes", "data", "rawHex")
                     .mapNotNull { key ->
-                        edit.optString(key).trim().takeIf { it.isNotBlank() }?.let {
+                        edit.optText(key)?.trim()?.takeIf { it.isNotBlank() }?.let {
                             key to
                                 it
                         }
@@ -375,6 +377,19 @@ internal fun EngineRuntime.editAsm(workspaceId: String, editSessionId: String, l
                     )
                 }
                 var range = asmEditRange(edit, startVa, thumb, elf.architecture, nop.size, functionSize)
+                // 【修复 B1】nop_out / asm 尾部补齐都按 NOP 的整宽度重复写入。range 不是
+                // nop.size 整数倍时，旧实现会写出半个指令（arm64 给 byteLength=6 会产出
+                // 1F 20 03 D5 1F 20），而 edit_check / build 都不校验指令边界，只有目标
+                // 真的执行到那段才 SIGILL。这里在写入前把它拦成结构化错误。
+                val alignment = PatchByteUtils.instructionAlignment(nop)
+                if (alignment > 1 && range.second % alignment != 0) {
+                    return@withSession err(
+                        "SIZE_MISMATCH",
+                        "Selected range ${range.second}B is not a multiple of the ${alignment}-byte instruction size for ${elf.architecture}. Use instructionCount (multiplied by the instruction size) or pass a byteLength that is a multiple of $alignment.",
+                        "edits[$i]",
+                        JSONObject().put("byteLength", range.second).put("alignment", alignment)
+                    )
+                }
                 val patch = if (mode == "nop_out" || mode == "delete_instructions") {
                     PatchByteUtils.repeatBytes(nop, range.second)
                 } else {

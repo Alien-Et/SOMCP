@@ -12,6 +12,8 @@
 //
 package com.soreverse.mcp.mcp
 
+import com.soreverse.mcp.core.optNonBlankText
+
 import android.util.Base64
 import com.soreverse.mcp.core.AppLog
 import com.soreverse.mcp.core.HexCodec
@@ -57,7 +59,7 @@ object ToolCatalog {
                     "prefix" str "Path or file prefix filter (action=list)"
                     "limit" int "Maximum items (action=list)"
                     "cursor" str "Pagination cursor (action=list)"
-                    "temporary" bool "If true, workspace won't persist across restarts"
+                    "temporary" bool "Mark the workspace as disposable: it is evicted first when the 8-workspace open limit is reached. Workspaces live in memory only — nothing survives an app restart either way."
                 }
             )
         }
@@ -1504,14 +1506,14 @@ object ToolCatalog {
                 val workspaceId = a.str("workspaceId")
                 val editSessionId = a.str("editSessionId")
                 val params = a.optJSONObject("analyze") ?: JSONObject().apply {
-                    a.optString("backend").takeIf(String::isNotBlank)
+                    a.optNonBlankText("backend")
                         ?.let { put("backend", it) }
-                    a.optString("targetFunction").takeIf(String::isNotBlank)
+                    a.optNonBlankText("targetFunction")
                         ?.let { put("targetFunction", it) }
                     a.optJSONArray("args")?.let { put("args", it) }
                     if (a.has("trace")) put("trace", a.optBoolean("trace"))
                     if (a.has("dumpSize")) put("dumpSize", a.optInt("dumpSize"))
-                    a.optString("dumpAddress").takeIf(String::isNotBlank)
+                    a.optNonBlankText("dumpAddress")
                         ?.let { put("dumpAddress", it) }
                 }
                 e.dynamicDispatch(workspaceId, editSessionId, "analyze", "", JSONArray().put(params))

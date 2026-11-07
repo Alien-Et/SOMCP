@@ -44,7 +44,7 @@ internal object PatchAudit {
      */
     fun applyVerify(original: ByteArray, edited: ByteArray, originalElf: ElfFile, editedElf: ElfFile): JSONObject {
         val checks = JSONArray()
-        var minSize = minOf(original.size, edited.size)
+        val minSize = minOf(original.size, edited.size)
         var diffCount = 0L
         val diffs = JSONArray()
         var i = 0

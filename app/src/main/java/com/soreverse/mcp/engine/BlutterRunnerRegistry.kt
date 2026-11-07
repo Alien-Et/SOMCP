@@ -2,6 +2,7 @@ package com.soreverse.mcp.engine
 
 import android.content.Context
 import com.soreverse.mcp.core.ShellAssets
+import com.soreverse.mcp.core.optNonBlankText
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -140,16 +141,12 @@ internal object BlutterRunnerManifest {
             val aliases = stringList(item.optJSONArray("snapshotAliases"))
             val engineRevisions = (
                 stringList(item.optJSONArray("engineRevisions")) +
-                    listOfNotNull(item.optString("engineRevision").takeIf { it.isNotBlank() })
+                    listOfNotNull(item.optNonBlankText("engineRevision"))
                 ).distinct()
             BlutterRunnerDescriptor(
                 id,
-                item.optString("dartVersion").takeIf {
-                    it.isNotBlank()
-                },
-                item.optString("engineRevision").takeIf {
-                    it.isNotBlank()
-                },
+                item.optNonBlankText("dartVersion"),
+                item.optNonBlankText("engineRevision"),
                 abi,
                 item.optBoolean(
                     "compressedPointers"
@@ -159,9 +156,7 @@ internal object BlutterRunnerManifest {
                     true
                 ),
                 sha256, source, libraryName, manifest.optString("upstreamCommit"),
-                item.optString("dartRevision").takeIf {
-                    it.isNotBlank()
-                },
+                item.optNonBlankText("dartRevision"),
                 aliases,
                 engineRevisions,
                 stringList(item.optJSONArray("flutterVersions")),
@@ -183,8 +178,8 @@ internal object BlutterRunnerManifest {
         val map = mutableMapOf<String, String>()
         for (index in 0 until coverage.length()) {
             val item = coverage.optJSONObject(index) ?: continue
-            val engineRevision = item.optString("engineRevision").takeIf { it.isNotBlank() } ?: continue
-            val snapshotHash = item.optString("snapshotHash").takeIf { it.isNotBlank() } ?: continue
+            val engineRevision = item.optNonBlankText("engineRevision") ?: continue
+            val snapshotHash = item.optNonBlankText("snapshotHash") ?: continue
             map.putIfAbsent(engineRevision, snapshotHash)
         }
         return map
@@ -206,9 +201,12 @@ internal object BlutterRunnerManifest {
         for (index in 0 until coverage.length()) {
             if (hints.length() >= limit) break
             val item = coverage.optJSONObject(index) ?: continue
-            val engineRevision = item.optString("engineRevision")
-            val snapshotHash = item.optString("snapshotHash")
-            val dartVersion = item.optString("dartVersion")
+            // 【修复 B4】optString 对 JSONObject.NULL 会返回字符串 "null"，
+            // 之前的 .ifBlank { null } 兜底永远不触发，于是 "null" 会被当成真实
+            // 版本号写进提示里。
+            val engineRevision = item.optNonBlankText("engineRevision")
+            val snapshotHash = item.optNonBlankText("snapshotHash")
+            val dartVersion = item.optNonBlankText("dartVersion")
             val matched = (requirement.engineRevision != null && engineRevision == requirement.engineRevision) ||
                 (requirement.snapshotHash != null && snapshotHash == requirement.snapshotHash) ||
                 (requirement.dartVersion != null && dartVersion == requirement.dartVersion)
@@ -216,12 +214,12 @@ internal object BlutterRunnerManifest {
             hints.put(
                 JSONObject()
                     .put("flutterVersion", item.optString("flutterVersion"))
-                    .put("dartVersion", dartVersion.ifBlank { null } ?: JSONObject.NULL)
-                    .put("engineRevision", engineRevision.ifBlank { null } ?: JSONObject.NULL)
-                    .put("snapshotHash", snapshotHash.ifBlank { null } ?: JSONObject.NULL)
+                    .put("dartVersion", dartVersion ?: JSONObject.NULL)
+                    .put("engineRevision", engineRevision ?: JSONObject.NULL)
+                    .put("snapshotHash", snapshotHash ?: JSONObject.NULL)
                     .put("status", item.optString("status"))
                     .put("supported", item.optBoolean("supported", false))
-                    .put("reason", item.optString("reason").ifBlank { null } ?: JSONObject.NULL)
+                    .put("reason", item.optNonBlankText("reason") ?: JSONObject.NULL)
             )
         }
         return hints
@@ -229,7 +227,7 @@ internal object BlutterRunnerManifest {
 
     private fun stringList(array: JSONArray?): List<String> {
         if (array == null) return emptyList()
-        return (0 until array.length()).mapNotNull { array.optString(it).takeIf { value -> value.isNotBlank() } }
+        return (0 until array.length()).mapNotNull { array.optNonBlankText(it) }
     }
 }
 

@@ -12,7 +12,7 @@ import org.json.JSONObject
 internal fun EngineRuntime.analysisReport(workspaceId: String, editSessionId: String = "", writeToFile: Boolean = true): JSONObject = guarded {
     val resolvedId = resolveWorkspaceId(workspaceId, "")
     val ws =
-        workspaces[resolvedId]
+        touchWorkspace(resolvedId)
             ?: return@guarded err(
                 "WORKSPACE_NOT_FOUND",
                 "Workspace not found",
@@ -115,7 +115,7 @@ internal fun EngineRuntime.analysisReport(workspaceId: String, editSessionId: St
 
 internal fun EngineRuntime.editAudit(workspaceId: String, editSessionId: String): JSONObject = guarded {
     val ws =
-        workspaces[workspaceId]
+        touchWorkspace(workspaceId)
             ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found")
     val session =
         ws.edits[editSessionId]
@@ -218,7 +218,7 @@ internal fun EngineRuntime.persistAudit(workspaceId: String, editSessionId: Stri
         )
     }
     val ws =
-        workspaces[workspaceId]
+        touchWorkspace(workspaceId)
             ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found")
     val session =
         ws.edits[editSessionId]
@@ -356,12 +356,12 @@ internal fun EngineRuntime.diff(
     val settings = SettingsStore(context)
     val cap = limit.coerceIn(1, settings.maxCompareRanges)
     val ws =
-        workspaces[workspaceId] ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found")
+        touchWorkspace(workspaceId) ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found")
     val session =
         ws.edits[editSessionId]
             ?: return@guarded err("EDIT_SESSION_NOT_FOUND", "Edit session not found")
     val baselineWs = if (compareWorkspaceId.isNotBlank()) {
-        workspaces[compareWorkspaceId]
+        touchWorkspace(compareWorkspaceId)
             ?: return@guarded err("WORKSPACE_NOT_FOUND", "Compare workspace not found")
     } else {
         ws
@@ -437,7 +437,7 @@ internal fun EngineRuntime.diff(
 
 internal fun EngineRuntime.writePatchReport(workspaceId: String, session: EditSession, output: File): File {
     val report = File(output.parentFile, "${output.nameWithoutExtension}.patch-report.json")
-    val ws = workspaces[workspaceId]
+    val ws = touchWorkspace(workspaceId)
     val emptyPatches = session.patches.count { it.newHex.isBlank() }
     val diffRanges = JSONArray()
     if (ws != null) {

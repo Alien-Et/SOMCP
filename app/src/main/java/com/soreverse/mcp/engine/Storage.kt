@@ -188,14 +188,25 @@ class WorkDirectory(private val context: Context, private val treeUri: Uri) {
         // 【魔改】直读通道：root_fs / local_fs / 无 SAF URI 的普通路径
         if (source.source == "root_fs" || source.source == "local_fs" || source.treeDocumentUri == null) {
             val path = source.path
-            // 先试 root（可读 /data/data 等受限目录）
-            RootShell.readBytes(path)?.let { return it }
-            // 再试普通 File 读
+            // 【修复 B5】先试普通直读。/data/app、/system、/apex 下的 .so 通常是
+            // 0644，File.readBytes() 实测 ~23ms；而 su -c cat 需要 fork 一次 su
+            // （实测 ~139ms），并且 SU 通道是串行的 —— 并发 so_open 时这里是瓶颈。
+            // 只有直读失败（EACCES / 不存在）或读到的长度与声明大小不符时，
+            // 才回退 root 通道。
             val f = File(path)
-            if (f.exists() && f.isFile) return f.readBytes()
-            error("Cannot read ${source.name} at $path (root not available and file not readable)")
+            if (f.isFile && f.canRead()) {
+                val direct = runCatching { f.readBytes() }.getOrNull()
+                if (direct != null && (source.size <= 0L || direct.size.toLong() == source.size)) {
+                    return direct
+                }
+            }
+            // 回退 root（可读 /data/data 等受限目录，也能顺便纠正长度不符）
+            RootShell.readBytes(path)?.let { return it }
+            error("Cannot read ${source.name} at $path (file not readable and root channel unavailable)")
         }
-        val uri = source.treeDocumentUri ?: error("Missing document uri")
+        // 走到这里 treeDocumentUri 必非空（上面已把 == null 的分支提前返回）；
+        // 用 requireNotNull 而不是 ?: error 以免产生"elvis 恒取左值"的冗余警告。
+        val uri = requireNotNull(source.treeDocumentUri) { "Missing document uri" }
         return if (source.size >= LARGE_FILE_THRESHOLD) {
             readBytesChannel(uri, source.size) ?: readBytes(uri)
         } else {

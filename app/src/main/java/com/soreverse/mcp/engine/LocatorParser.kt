@@ -12,7 +12,14 @@ internal object LocatorParser {
         } else {
             trimmed
         }
-        return withoutPrefix.substringAfterLast('!').substringBeforeLast('@').trim()
+        // 【修复 B9】显式表达契约：locator 不含 '@' 时旧写法依赖
+        // `substringBeforeLast('@')` 返回原串这一 Kotlin 隐式语义；将来若出现
+        // 新的含 '@' 的 locator 形态，会在无人察觉的情况下被截断。这里把两种
+        // 情形都写死，行为与旧版完全一致，但不再依赖隐式规则。
+        val withoutEntry = withoutPrefix.substringAfterLast('!')
+        val at = withoutEntry.lastIndexOf('@')
+        val withoutAddress = if (at >= 0) withoutEntry.substring(0, at) else withoutEntry
+        return withoutAddress.trim()
     }
 
     fun address(locator: String): Long? {

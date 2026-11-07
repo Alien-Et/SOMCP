@@ -500,6 +500,27 @@ bash build-native-android.sh
 - CI CMake 4.x 兼容：`-DCMAKE_POLICY_VERSION_MINIMUM=3.5` + 幂等 sed 修 `cmake_policy(SET CMP0048 OLD)`
 - CI keystore 恢复：`tr -d '[:space:]'` 去空白 + `keytool -list` 校验
 
+**第二轮全项目扫描（2026-11-07）**
+
+- `edit_asm` 的 NOP 填充会写出**半个指令**（arm64 给 `byteLength=6` 产 `1F 20 03 D5 1F 20`），
+  而 `edit_check` / `build` 都不校验指令边界 —— 打包成功、目标执行到那段才 SIGILL。
+  现在 `repeatBytes` 强制整宽度，`edit_asm` 提前返回 `SIZE_MISMATCH` + `badValue{alignment}`。
+- `workspaces` 是**无上限**的 `ConcurrentHashMap`（同文件的 `searchCache` / `PageStore` 都有上限），
+  连续 `so_open` 多个大 SO 最终 `OutOfMemoryError` 干掉服务进程。现在 `MAX_OPEN_WORKSPACES = 8` +
+  LRU 淘汰（`temporary` 优先），取用统一走 `touchWorkspace()` 刷新时间戳。
+- `AppLog` 的共享 `SimpleDateFormat` 在锁外 `format()`，并发写日志会串时间戳甚至抛异常，
+  而它正好发生在「写日志」路径上，会把真正的错误盖掉。现在格式化与入队同锁。
+- Android `org.json` 的 `optString` 对 `JSONObject.NULL` 返回**字符串 `"null"`**，
+  导致 `optString(k).ifBlank { null } ?: JSONObject.NULL` 这类兜底永远不触发 ——
+  `patch_report.asm`、Blutter registry、`frida_call` 参数等 10 余处都会漏出字面量 `"null"`。
+  现在统一走 `core/JsonText.kt` 的 `optText` / `optNonBlankText`。
+- `Storage.readSource` 曾经**先**无条件 `su -c cat`、**后**才试直读：`0644` 的 `.so`
+  直读 23ms、`su -c cat` 139ms，还占串行的 SU 通道。现在先直读（核对长度），失败才回退 root。
+- `byteDiffRanges` 逐区间 new `JSONObject` 且**无上限**，LIEF 整体重排时会打爆堆；
+  现在默认 `maxRanges = 256` 并输出 `diffTruncated` / `diffBytes`。
+- `temporary` 参数此前是纯 no-op（没有任何清理逻辑读它），schema 描述与实际不符；
+  现在语义为「disposable，达 8 个上限时优先淘汰」。
+
 ---
 
 ## 许可证与再分发

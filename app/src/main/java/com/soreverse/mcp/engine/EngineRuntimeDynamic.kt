@@ -29,6 +29,8 @@
 // handed to DynamicAnalysisService for an independent AI report.
 package com.soreverse.mcp.engine
 
+import com.soreverse.mcp.core.optNonBlankText
+
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.ok
@@ -227,7 +229,7 @@ internal fun EngineRuntime.dynamicDispatch(
         "frida_call" -> {
             val sessionId = args.optString(0)
             val symbolName = method.ifBlank { args.optString(1) }
-            val callArgs = args.optString(2).ifBlank { "[]" }
+            val callArgs = args.optNonBlankText(2) ?: "[]"
             frida.invokeRpc(
                 sessionId,
                 "callFunction",
@@ -278,7 +280,7 @@ internal fun EngineRuntime.dynamicDispatch(
                     ""
                 )
             }
-            val jsBody = args.optString(2).ifBlank { "return 0;" }
+            val jsBody = args.optNonBlankText(2) ?: "return 0;"
             frida.invokeRpc(
                 sessionId,
                 "replaceFunction",
@@ -416,7 +418,7 @@ private fun EngineRuntime.dynamicAnalyze(workspaceId: String, editSessionId: Str
                     "target" to target.host + ":" + target.port
                 )
             }
-            val moduleName = params.str("moduleName", workspaces[workspaceId]?.source?.name ?: "target.so")
+            val moduleName = params.str("moduleName", touchWorkspace(workspaceId)?.source?.name ?: "target.so")
             val mode = params.str("fridaMode", "attach")
             val processTarget = params.str("fridaTarget", params.str("processName"))
             if (processTarget.isBlank()) {

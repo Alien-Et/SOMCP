@@ -67,10 +67,16 @@ object AppLog {
         } else {
             raw
         }
-        val nextLine = "${formatter.format(Date())} $level $clipped"
-        synchronized(lock) {
+        // 【修复 B3】SimpleDateFormat 不是线程安全的（内部持有可变 Calendar）。
+        // MCP 服务会并发处理请求，以前 formatter.format() 在 synchronized(lock)
+        // 之外执行，多线程同时写日志会出现时间戳串味，甚至抛
+        // ArrayIndexOutOfBoundsException —— 而那个异常恰好发生在写日志的路径上，
+        // 会把真正要记录的错误盖掉。现在格式化与入队合并进同一把锁（开销可忽略）。
+        val nextLine = synchronized(lock) {
             if (lines.size == MAX_LINES) lines.removeFirst()
-            lines.addLast(nextLine)
+            val line = "${formatter.format(Date())} $level $clipped"
+            lines.addLast(line)
+            line
         }
         deliver(nextLine)
     }

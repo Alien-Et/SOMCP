@@ -86,7 +86,7 @@ internal fun EngineRuntime.unidbgDispatch(
                     listOf(
                         JSONObject().put(
                             "name",
-                            workspaces[workspaceId]?.source?.name ?: "target.so"
+                            touchWorkspace(workspaceId)?.source?.name ?: "target.so"
                         ).put(
                             "architecture",
                             elfFor(workspaceId, editSessionId).architecture

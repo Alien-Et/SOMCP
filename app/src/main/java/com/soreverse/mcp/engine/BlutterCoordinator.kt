@@ -18,6 +18,7 @@
 package com.soreverse.mcp.engine
 
 import android.content.Context
+import com.soreverse.mcp.core.optNonBlankText
 import com.soreverse.mcp.core.InsufficientMemoryException
 import com.soreverse.mcp.core.MemoryGuard
 import com.soreverse.mcp.core.RootShell
@@ -44,10 +45,8 @@ internal class BlutterCoordinator(
 
         "result" -> result(
             args.str("jobId"),
-            args.optString("kind").takeIf {
-                it.isNotBlank()
-            },
-            args.optString("cursor").takeIf { it.isNotBlank() },
+            args.optNonBlankText("kind"),
+            args.optNonBlankText("cursor"),
             args.optInt("limit", 1000)
         )
 
@@ -196,14 +195,12 @@ internal class BlutterCoordinator(
         val analysis = input.analysis
         val flutter = analysis.optJSONObject("flutter") ?: JSONObject()
         val requirement = BlutterRunnerRequirement(
-            engineRevision = flutter.optJSONArray("engineIds")?.optString(0)?.takeIf {
-                it.isNotBlank()
-            },
-            dartVersion = flutter.optString("dartVersion").takeIf { it.isNotBlank() },
+            engineRevision = flutter.optJSONArray("engineIds")?.optNonBlankText(0),
+            dartVersion = flutter.optNonBlankText("dartVersion"),
             abi = analysis.optString("abi", args.str("abi", "arm64-v8a")),
             compressedPointers = flutter.optBoolean("compressedPointers", false),
             analysis = !args.optBoolean("noAnalysis", false),
-            snapshotHash = flutter.optString("snapshotHash").takeIf { it.isNotBlank() }
+            snapshotHash = flutter.optNonBlankText("snapshotHash")
         )
         val runner = registry.select(requirement)
         if (runner == null) {
@@ -314,7 +311,7 @@ internal class BlutterCoordinator(
 
     private fun stringList(array: JSONArray?): List<String> {
         if (array == null) return emptyList()
-        return (0 until array.length()).mapNotNull { array.optString(it).takeIf { value -> value.isNotBlank() } }
+        return (0 until array.length()).mapNotNull { array.optNonBlankText(it) }
     }
 
     private fun status(jobId: String): JSONObject = store.get(jobId)?.let { ok(it) }

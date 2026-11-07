@@ -12,7 +12,7 @@ import org.json.JSONObject
 
 internal fun EngineRuntime.editOpen(workspaceId: String): JSONObject = guarded {
     val ws =
-        workspaces[workspaceId] ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found")
+        touchWorkspace(workspaceId) ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found")
     val id = "so-edit-${UUID.randomUUID()}"
     ws.edits[id] = EditSession(id, ws.data.copyOf())
     ok(
@@ -231,7 +231,7 @@ internal fun EngineRuntime.editRedo(workspaceId: String, editSessionId: String, 
 
 internal fun EngineRuntime.editReset(workspaceId: String, editSessionId: String): JSONObject = guarded {
     val ws =
-        workspaces[workspaceId]
+        touchWorkspace(workspaceId)
             ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found")
     withSession(
         workspaceId,
@@ -320,7 +320,7 @@ internal fun EngineRuntime.maybeAutoPersist(workspaceId: String, session: EditSe
 
 internal fun EngineRuntime.editCheck(workspaceId: String, editSessionId: String): JSONObject = guarded {
     val ws =
-        workspaces[workspaceId]
+        touchWorkspace(workspaceId)
             ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found")
     withSession(
         workspaceId,

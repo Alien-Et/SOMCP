@@ -1010,6 +1010,8 @@ internal fun EngineRuntime.xansoBuildSections(workspaceId: String, editSessionId
         else -> runCatching { lief.fixSections(recovered ?: original) }.getOrNull()
     } ?: return@guarded err("XANSO_BUILD_FAILED", "$backend failed to reconstruct section headers")
     val afterElf = lief.parse(fixed)
+    // 【修复 B7】差异扫描加区间上限，避免 LIEF 整体重排时堆被区间 JSON 打爆。
+    val diff = PatchByteUtils.diffRanges(original, fixed)
     if (afterElf.sections.isEmpty()) {
         return@guarded err(
             "XANSO_BUILD_FAILED",
@@ -1048,7 +1050,9 @@ internal fun EngineRuntime.xansoBuildSections(workspaceId: String, editSessionId
             .put("dynamicEntriesAfter", afterElf.dynamicEntries.size)
             .put("sha256Before", sha256(original))
             .put("sha256After", sha256(fixed))
-            .put("diffRanges", PatchByteUtils.byteDiffRanges(original, fixed))
+            .put("diffRanges", diff.ranges)
+            .put("diffTruncated", diff.truncated)
+            .put("diffBytes", diff.diffBytes)
     )
 }
 

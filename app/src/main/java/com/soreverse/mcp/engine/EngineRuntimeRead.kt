@@ -1,5 +1,7 @@
 package com.soreverse.mcp.engine
 
+import com.soreverse.mcp.core.optNonBlankText
+
 import com.soreverse.mcp.core.HexCodec
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.err
@@ -21,7 +23,7 @@ internal fun EngineRuntime.list(
 ): JSONObject = guarded {
     val resolvedWorkspaceId = resolveWorkspaceId(workspaceId, pathHint)
     val elf = elfFor(resolvedWorkspaceId, editSessionId)
-    val name = workspaces[resolvedWorkspaceId]?.source?.name ?: "lib.so"
+    val name = touchWorkspace(resolvedWorkspaceId)?.source?.name ?: "lib.so"
     val all = when (view) {
         "sections" -> elf.sections.asSequence().withIndex().filter {
             it.value.name.startsWith(prefix)
@@ -183,7 +185,7 @@ internal fun EngineRuntime.hexdump(workspaceId: String, editSessionId: String, l
             .put(
                 "targetLocator",
                 EngineJson.sectionLocator(
-                    workspaces[workspaceId]?.source?.name ?: "lib.so",
+                    touchWorkspace(workspaceId)?.source?.name ?: "lib.so",
                     sec,
                     elf.sections.indexOf(sec)
                 )
@@ -230,7 +232,7 @@ internal fun EngineRuntime.strings(
 ): JSONObject = guarded {
     val resolvedWorkspaceId = resolveWorkspaceId(workspaceId, pathHint)
     val elf = elfFor(resolvedWorkspaceId, editSessionId)
-    val name = workspaces[resolvedWorkspaceId]?.source?.name ?: "lib.so"
+    val name = touchWorkspace(resolvedWorkspaceId)?.source?.name ?: "lib.so"
     val section = LocatorParser.target(locator, "so_section")
     val encodingFilter = encoding.trim().uppercase()
     val compiledRegex = if (regex && prefix.isNotBlank()) {
@@ -352,7 +354,7 @@ internal fun EngineRuntime.disasm(
                     "resolvedSection",
                     section?.let {
                         EngineJson.sectionJson(
-                            workspaces[effectiveWorkspaceId]?.source?.name ?: "lib.so",
+                            touchWorkspace(effectiveWorkspaceId)?.source?.name ?: "lib.so",
                             it,
                             elf.sections.indexOf(it)
                         )
@@ -470,7 +472,7 @@ internal fun EngineRuntime.disasm(
                     "resolvedSection",
                     executableSectionFor(elf, locatorVa)?.let {
                         EngineJson.sectionJson(
-                            workspaces[effectiveWorkspaceId]?.source?.name ?: "lib.so",
+                            touchWorkspace(effectiveWorkspaceId)?.source?.name ?: "lib.so",
                             it,
                             elf.sections.indexOf(it)
                         )
@@ -798,7 +800,7 @@ internal fun EngineRuntime.xrefSymbol(workspaceId: String, editSessionId: String
                 "relocation"
             ).put(
                 "from",
-                "so_reloc:${workspaces[workspaceId]?.source?.name}!${it.section}!${it.offset.toString(
+                "so_reloc:${touchWorkspace(workspaceId)?.source?.name}!${it.section}!${it.offset.toString(
                     16
                 )}"
             ).put("to", locator).put("address", hex(it.offset)).put("confidence", "high")
@@ -880,7 +882,7 @@ internal fun EngineRuntime.search(
 ): JSONObject = guarded {
     val resolvedWorkspaceId = resolveWorkspaceId(workspaceId, pathHint.ifBlank { query })
     val elf = elfFor(resolvedWorkspaceId, editSessionId)
-    val name = workspaces[resolvedWorkspaceId]?.source?.name ?: "lib.so"
+    val name = touchWorkspace(resolvedWorkspaceId)?.source?.name ?: "lib.so"
     val key = searchKey(resolvedWorkspaceId, editSessionId, target, query, limit)
     if (searchCache.size > 64) searchCache.clear()
     val hits = searchCache.getOrPut(key) {
@@ -933,10 +935,10 @@ internal fun EngineRuntime.search(
 internal fun EngineRuntime.readStats(workspaceId: String, editSessionId: String = "", pathHint: String = ""): JSONObject = guarded {
     val resolvedId = resolveWorkspaceId(workspaceId, pathHint)
     val data = if (editSessionId.isNotBlank()) {
-        workspaces[resolvedId]?.edits?.get(editSessionId)?.data
+        touchWorkspace(resolvedId)?.edits?.get(editSessionId)?.data
             ?: return@guarded err("EDIT_SESSION_NOT_FOUND", "Edit session not found")
     } else {
-        workspaces[resolvedId]?.data
+        touchWorkspace(resolvedId)?.data
             ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found")
     }
     val elf = runCatching { lief.parse(data) }.getOrElse {
@@ -1085,7 +1087,7 @@ internal fun EngineRuntime.analyze(workspaceId: String, editSessionId: String, p
     val overview = ElfOverviewBuilder.build(
         elf = elf,
         bytes = bytes,
-        fileName = workspaces[resolvedWorkspaceId]?.source?.name ?: "lib.so",
+        fileName = touchWorkspace(resolvedWorkspaceId)?.source?.name ?: "lib.so",
         sha256 = sha256(bytes),
         size = bytes.size.toLong(),
         functionCountHint = symbolFunctions.size
@@ -1140,7 +1142,7 @@ internal fun EngineRuntime.overview(workspaceId: String, editSessionId: String =
         ElfOverviewBuilder.build(
             elf = elf,
             bytes = bytes,
-            fileName = workspaces[resolvedWorkspaceId]?.source?.name ?: "lib.so",
+            fileName = touchWorkspace(resolvedWorkspaceId)?.source?.name ?: "lib.so",
             sha256 = sha256(bytes),
             size = bytes.size.toLong(),
             functionCountHint = symbolFunctions.size
@@ -1176,7 +1178,7 @@ internal fun EngineRuntime.resolveWorkspaceId(workspaceId: String, pathHint: Str
     error("Workspace not found: $workspaceId")
 }
 
-internal fun EngineRuntime.workspace(id: String): Workspace = workspaces[id] ?: error("Workspace not found: $id")
+internal fun EngineRuntime.workspace(id: String): Workspace = touchWorkspace(id) ?: error("Workspace not found: $id")
 
 internal fun EngineRuntime.dataFor(workspaceId: String, editSessionId: String): ByteArray = if (editSessionId.isBlank()) {
     workspace(workspaceId).data
@@ -1256,7 +1258,7 @@ internal fun EngineRuntime.searchKey(workspaceId: String, editSessionId: String,
     val revision = if (editSessionId.isBlank()) {
         0
     } else {
-        workspaces[workspaceId]?.edits?.get(editSessionId)?.revision
+        touchWorkspace(workspaceId)?.edits?.get(editSessionId)?.revision
             ?: 0
     }
     return "$workspaceId|$editSessionId|$revision|$target|${query.lowercase()}|${limit.coerceIn(
@@ -1588,7 +1590,7 @@ internal fun EngineRuntime.importAddressHints(symbolHints: JSONArray): Map<Long,
     for (i in 0 until symbolHints.length()) {
         val hint = symbolHints.optJSONObject(i) ?: continue
         val address = LocatorParser.hex(hint.optString("addr")) ?: continue
-        val symbol = hint.optString("symbol").takeIf { it.isNotBlank() } ?: continue
+        val symbol = hint.optNonBlankText("symbol") ?: continue
         if (hint.optString("kind") == "import") hints[address] = symbol
     }
     return hints

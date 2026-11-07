@@ -289,7 +289,7 @@ internal fun EngineRuntime.patchApplyVerify(workspaceId: String, editSessionId: 
 
 internal fun EngineRuntime.evidenceManifest(workspaceId: String, claims: JSONArray): JSONObject = guarded {
     val resolvedId = resolveWorkspaceId(workspaceId, "")
-    val ws = workspaces[resolvedId] ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found", "workspaceId", workspaceId)
+    val ws = touchWorkspace(resolvedId) ?: return@guarded err("WORKSPACE_NOT_FOUND", "Workspace not found", "workspaceId", workspaceId)
     val data = ws.data
     val manifest = JSONObject()
         .put(

@@ -1,6 +1,7 @@
 package com.soreverse.mcp.engine
 
 import android.content.Context
+import com.soreverse.mcp.core.optNonBlankText
 import com.soreverse.mcp.core.InsufficientMemoryException
 import com.soreverse.mcp.core.MemoryGuard
 import java.io.File
@@ -172,7 +173,7 @@ internal class BlutterResultStore(context: Context) {
         }
         var removedResults = 0
         val referenced = jobs.listFiles().orEmpty().mapNotNull {
-            readState(it.name)?.optString("resultKey")?.takeIf(String::isNotBlank)
+            readState(it.name)?.optNonBlankText("resultKey")
         }.toSet()
         results.listFiles()?.filter {
             it.lastModified() < cutoff && it.name !in referenced

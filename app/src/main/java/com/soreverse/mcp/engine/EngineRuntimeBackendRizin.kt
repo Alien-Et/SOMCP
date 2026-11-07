@@ -1,5 +1,7 @@
 package com.soreverse.mcp.engine
 
+import com.soreverse.mcp.core.optNonBlankText
+
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.ok
@@ -38,7 +40,7 @@ internal fun EngineRuntime.rzFunctions(
     val result = NativeEngine.active().functions(bytes, elf.architecture)
     val arr = runCatching { JSONArray(result) }.getOrNull()
     if (arr != null && arr.length() > 0) {
-        val wsName = workspaces[workspaceId]?.source?.name ?: "lib.so"
+        val wsName = touchWorkspace(workspaceId)?.source?.name ?: "lib.so"
         val list = (0 until arr.length()).map {
             val item = arr.getJSONObject(it)
             val name = item.optString("name")
@@ -58,7 +60,7 @@ internal fun EngineRuntime.rzFunctions(
             workspaceId
         ).put("architecture", elf.architecture).put("source", "rizin")
     }
-    val wsName = workspaces[workspaceId]?.source?.name ?: "lib.so"
+    val wsName = touchWorkspace(workspaceId)?.source?.name ?: "lib.so"
     val fallback = (elf.symbols + elf.dynSymbols)
         .filter { it.type == "FUNC" && !it.imported }
         .map {
@@ -569,7 +571,8 @@ internal fun EngineRuntime.rzDiff(workspaceIdA: String, editSessionIdA: String, 
     val bytesA = dataFor(workspaceIdA, editSessionIdA)
     val bytesB = dataFor(workspaceIdB, editSessionIdB)
     if (maxOf(bytesA.size, bytesB.size) <= 1024 * 1024) {
-        val ranges = PatchByteUtils.byteDiffRanges(bytesA, bytesB)
+        val diff = PatchByteUtils.diffRanges(bytesA, bytesB)
+        val ranges = diff.ranges
         return@guarded ok(
             JSONObject()
                 .put("workspaceIdA", workspaceIdA)
@@ -577,6 +580,8 @@ internal fun EngineRuntime.rzDiff(workspaceIdA: String, editSessionIdA: String, 
                 .put("diffBackend", "fast-byte-diff")
                 .put("diffRangeCount", ranges.length())
                 .put("diffRanges", ranges)
+                .put("diffTruncated", diff.truncated)
+                .put("diffBytes", diff.diffBytes)
                 .put("sha256A", sha256(bytesA))
                 .put("sha256B", sha256(bytesB))
         )
@@ -1023,9 +1028,7 @@ private fun EngineRuntime.enrichDecompilePayload(payload: JSONObject, bytes: Byt
     }
     contentAudit.optJSONArray("warnings")?.let { arr ->
         for (i in 0 until arr.length()) {
-            arr.optString(i).takeIf {
-                it.isNotBlank()
-            }?.let(warnings::add)
+            arr.optNonBlankText(i)?.let(warnings::add)
         }
     }
     return payload

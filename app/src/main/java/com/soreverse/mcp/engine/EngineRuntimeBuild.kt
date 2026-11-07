@@ -30,7 +30,7 @@ internal fun EngineRuntime.build(
     }
     val out = resolveOutputFile(outputName.ifBlank { "patched.so" }, strategy)
     out.writeBytes(bytes)
-    val session = workspaces[workspaceId]?.edits?.get(editSessionId)
+    val session = touchWorkspace(workspaceId)?.edits?.get(editSessionId)
     val report = if (session != null &&
         (writeReport ?: settings.writePatchReport)
     ) {
@@ -109,7 +109,7 @@ internal fun EngineRuntime.buildMany(
             "rename"
         }
     }
-    val session = workspaces[workspaceId]?.edits?.get(editSessionId)
+    val session = touchWorkspace(workspaceId)?.edits?.get(editSessionId)
     val results = JSONArray()
     for (i in 0 until outputs.length()) {
         val entry = outputs.optJSONObject(i)
@@ -211,7 +211,10 @@ internal fun EngineRuntime.fixSections(workspaceId: String, editSessionId: Strin
     val elfBefore = lief.parse(before)
     val fixed = lief.fixSections(before)
     val afterHash = sha256(fixed)
-    val diffRanges = PatchByteUtils.byteDiffRanges(before, fixed)
+    // 【修复 B7】字节差异扫描加区间上限：LIEF 若整体重排导致偏移平移，
+    // 两个几百 MB 的数组会产生海量差异区间，逐条 new JSONObject 会直接打爆堆。
+    val diff = PatchByteUtils.diffRanges(before, fixed)
+    val diffRanges = diff.ranges
     if (fixed.contentEquals(
             before
         )
@@ -251,6 +254,8 @@ internal fun EngineRuntime.fixSections(workspaceId: String, editSessionId: Strin
                 .put("candidateSha256After", afterHash)
                 .put("diffRangeCount", diffRanges.length())
                 .put("diffRanges", diffRanges)
+                .put("diffTruncated", diff.truncated)
+                .put("diffBytes", diff.diffBytes)
                 .put("beforeSections", elfBefore.sections.size)
                 .put("afterSections", elfAfter.sections.size)
                 .put("beforeProgramHeaders", elfBefore.programHeaders.size)
@@ -261,7 +266,7 @@ internal fun EngineRuntime.fixSections(workspaceId: String, editSessionId: Strin
     }
     val targetSession = editSessionId.takeIf {
         it.isNotBlank()
-    }?.let { workspaces[workspaceId]?.edits?.get(it) }
+    }?.let { touchWorkspace(workspaceId)?.edits?.get(it) }
     val sessionId = when {
         targetSession != null && targetSession.data.size == fixed.size -> {
             System.arraycopy(fixed, 0, targetSession.data, 0, fixed.size)
@@ -284,7 +289,7 @@ internal fun EngineRuntime.fixSections(workspaceId: String, editSessionId: Strin
         else -> {
             val newSessionId = "fix-${UUID.randomUUID()}"
             val session = EditSession(newSessionId, fixed)
-            workspaces[workspaceId]?.edits?.put(newSessionId, session)
+            touchWorkspace(workspaceId)?.edits?.put(newSessionId, session)
             newSessionId
         }
     }
@@ -303,6 +308,8 @@ internal fun EngineRuntime.fixSections(workspaceId: String, editSessionId: Strin
             .put("sha256After", afterHash)
             .put("diffRangeCount", diffRanges.length())
             .put("diffRanges", diffRanges)
+            .put("diffTruncated", diff.truncated)
+            .put("diffBytes", diff.diffBytes)
             .put("beforeSections", elfBefore.sections.size)
             .put("afterSections", elfAfter.sections.size)
             .put("beforeSymbols", elfBefore.symbols.size + elfBefore.dynSymbols.size)

@@ -15,7 +15,15 @@ data class Workspace(
     val analysisInputSource: String,
     val structureRecovery: JSONObject,
     val edits: MutableMap<String, EditSession> = ConcurrentHashMap()
-)
+) {
+    /**
+     * 【修复 B2】LRU 时间戳。`workspaces` 以前没有上限，每个打开的 SO（含完整
+     * 字节 + 每节 page）都会常驻到进程结束，连续 open 多个大 SO 直接 OOM。
+     * 现在由 EngineRuntime.evictWorkspacesIfNeeded() 按这个字段淘汰。
+     */
+    @Volatile
+    var lastAccessMillis: Long = System.currentTimeMillis()
+}
 
 internal data class SourceSummary(val architecture: String, val bits: Int, val endian: String, val hasDebugInfo: Boolean, val stripped: Boolean)
 
