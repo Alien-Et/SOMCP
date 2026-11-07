@@ -521,6 +521,27 @@ bash build-native-android.sh
 - `temporary` 参数此前是纯 no-op（没有任何清理逻辑读它），schema 描述与实际不符；
   现在语义为「disposable，达 8 个上限时优先淘汰」。
 
+**第三轮 Flutter 全链路实测（2026-11-07）**
+
+- **`flutter_blutter(action=analyze)` 此前在任何设备、任何 APK 上都 100% 失败**，
+  两层原因：① runner 服务声明为 `isolatedProcess="true"`，隔离进程里
+  SharedPreferences 不可用，而 `Application.onCreate` 无条件构造 `SettingsStore`
+  → 进程 0.85 秒即崩；② 跳过初始化后，隔离进程的 SELinux 域仍让 runner 在
+  `blutter_run_fd` 入口 SIGSEGV。现在改为**普通 `:blutter` 独立进程**
+  （崩溃仍不影响主进程），runner 能真正执行。
+- **ABI split 安装**的 APK（`libapp/libflutter` 在 split 里而不在 `base.apk` 中）
+  不再误报 `FLUTTER_LIBS_NOT_FOUND`，会自动回退到同目录的 `lib/<abi>/`，
+  并处理安装目录用 cpuAbi 简称（`lib/arm64`）的命名差异。
+- **`analyze_outline` 在 stripped 二进制上完全不可用**（只查 ELF 符号表，
+  `symbols=0` → 任何 locator 都 `FUNCTION_NOT_FOUND`）。现在按
+  ELF 符号 → Rizin 恢复函数解析，并回报 `resolvedBy`。
+- `FLUTTER_VERSION_NOT_SUPPORTED` 现在带 **`missingRunner`** 规格
+  （dartVersion / engineRevision / snapshotHash / abi / compressedPointers），
+  可直接拿去构建；同时说明为什么 runner 不能运行时下载。
+- 结论：Blutter 兼容单位是 **snapshotHash**（一个 hash 覆盖多个 Flutter 版本），
+  而 runner **必须随 APK 分发**（`dlopen` 只能命中 APK 的 native lib 目录，
+  Android 10+ 禁止从可写目录加载）。增量支持走「按需构建 / 多产物 / runner 合并」。
+
 ---
 
 ## 许可证与再分发

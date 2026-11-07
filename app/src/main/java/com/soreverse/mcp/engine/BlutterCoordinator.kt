@@ -101,7 +101,18 @@ internal class BlutterCoordinator(
                             path
                         )
                     } else {
-                        ok(inspectApkFile(effective, abi))
+                        val inventory = inspectApkFile(effective, abi)
+                        // 【修复 B】base.apk 里没有 libapp/libflutter 对时，可能是
+                        // ABI split 安装（so 被拆到 split 里，不在 base.apk 内）。
+                        // 设备上这两个 so 就在同一个安装目录的 lib/<abi>/ 下，
+                        // 直接判死会给出误导性的 FLUTTER_LIBS_NOT_FOUND。
+                        val splitDir =
+                            if (inventory.optJSONObject("selected") == null) {
+                                splitLibraryDirectory(effective, abi)
+                            } else {
+                                null
+                            }
+                        if (splitDir != null) ok(inspectDirectory(splitDir, path, abi)) else ok(inventory)
                     }
                 }
 
@@ -266,11 +277,16 @@ internal class BlutterCoordinator(
             .put("compressedPointers", requirement.compressedPointers)
             .put("analysis", requirement.analysis)
         val range = describeSupport(supported)
+        val requiredDart = requirement.dartVersion
         val error = JSONObject()
             .put("code", "FLUTTER_VERSION_NOT_SUPPORTED")
             .put(
                 "message",
-                "This release embeds only the $range Blutter runner. The target APK does not match that snapshot compatibility key."
+                "This build embeds only the $range Blutter runner, and the target APK's Dart snapshot does not match it. " +
+                    "Blutter needs a Dart VM parser compiled from the matching Flutter engine revision, so a missing runner " +
+                    "cannot be fetched onto the device at runtime — it has to ship inside the APK's native lib directory. " +
+                    "Either analyse an APK built with $range, or rebuild SOMCP with a runner for the version in `missingRunner` " +
+                    "(see docs/11.Flutter与Blutter.md)."
             )
             .put("recoverable", false)
             .put("stage", "runner_selection")
@@ -278,6 +294,20 @@ internal class BlutterCoordinator(
             .put("supportedDart", stringList(supported.optJSONArray("dartVersions")).joinToString(", "))
             .put("supportedVersions", supported)
             .put("required", required)
+            // 【修复 D】把"缺的那个 runner"整理成一条可直接拿去构建的规格。
+            // 旧响应只有 supported / required 两组数据，调用方（含 AI）得自己
+            // 对比才知道该编哪个版本；而 coverageHints 还常常是空的（新版本
+            // 的 snapshotHash 提取不到）。现在直接给出缺失规格 + 获取途径。
+            .put(
+                "missingRunner",
+                JSONObject()
+                    .put("dartVersion", requiredDart ?: JSONObject.NULL)
+                    .put("engineRevision", requirement.engineRevision ?: JSONObject.NULL)
+                    .put("snapshotHash", requirement.snapshotHash ?: JSONObject.NULL)
+                    .put("abi", requirement.abi)
+                    .put("compressedPointers", requirement.compressedPointers)
+                    .put("source", "build-time only (must ship in lib/<abi>/ of the APK)")
+            )
             .put("coverageHints", registry.coverageHints(requirement))
         store.update(jobId, "failed", "runner_selection", error)
         return ok(
@@ -291,6 +321,10 @@ internal class BlutterCoordinator(
                     "nextActions",
                     JSONArray().put("use a Flutter ${stringList(supported.optJSONArray("flutterVersions")).joinToString("–")} APK")
                         .put("inspect the APK fingerprint without running analysis")
+                        .put(
+                            "rebuild SOMCP with a Blutter runner for Dart ${requiredDart ?: "?"} " +
+                                "(engineRevision ${requirement.engineRevision ?: "?"}); see missingRunner"
+                        )
                 )
         )
     }
@@ -383,11 +417,18 @@ internal class BlutterCoordinator(
                 effective.isFile -> {
                     val inventory = FlutterArtifactInspector.inspectApk(effective, abi)
                     if (inventory.optJSONObject("selected") == null) {
-                        throw IllegalArgumentException(
-                            "FLUTTER_LIBS_NOT_FOUND: APK does not contain a complete libapp.so/libflutter.so pair"
-                        )
+                        // 【修复 B】ABI split 安装的 base.apk 里没有 libapp/libflutter，
+                        // 但设备上同一个安装目录的 lib/<abi>/ 里有。回退到目录模式，
+                        // 而不是直接判 FLUTTER_LIBS_NOT_FOUND。
+                        val splitDir = splitLibraryDirectory(effective, abi)
+                            ?: throw IllegalArgumentException(
+                                "FLUTTER_LIBS_NOT_FOUND: APK does not contain a complete libapp.so/libflutter.so pair, " +
+                                    "and no sibling lib/<abi> directory was found next to it (checked for an ABI split install)"
+                            )
+                        libraryFilesFromDirectory(splitDir, splitDir.path, abi, jobInput)
+                    } else {
+                        FlutterArtifactInspector.extractLibrariesTo(effective, jobInput, abi)
                     }
-                    FlutterArtifactInspector.extractLibrariesTo(effective, jobInput, abi)
                 }
 
                 else -> {
@@ -423,6 +464,46 @@ internal class BlutterCoordinator(
         } catch (t: Throwable) {
             null
         }
+    }
+
+    /**
+     * 【修复 B】ABI split 安装：libapp.so / libflutter.so 不在 base.apk 内部，
+     * 而在同一个安装目录的 `lib/<abi>/` 下。
+     *
+     * Play / 各类安装器对 Flutter 应用常做 ABI 拆分，base.apk 里只剩 DEX 与资源，
+     * 此时按 base.apk 分析会误报 FLUTTER_LIBS_NOT_FOUND —— 即使设备上这两个 so
+     * 就在旁边。这里回退到"同级 lib 目录"，复用目录模式的解析路径。
+     *
+     * 只认与 APK 同一个安装目录下的 `lib/`，不跟随任意路径，避免把无关目录当输入。
+     */
+    private fun splitLibraryDirectory(apkFile: File, requestedAbi: String): File? {
+        val root = apkFile.parentFile ?: return null
+        val libRoot = File(root, "lib")
+        if (!libRoot.isDirectory) return null
+        for (name in abiDirectoryNames(requestedAbi)) {
+            val dir = File(libRoot, name)
+            if (!dir.isDirectory) continue
+            val hasApp = dir.resolve("libapp.so").isFile || dir.resolve("App").isFile
+            val hasFlutter = dir.resolve("libflutter.so").isFile || dir.resolve("Flutter").isFile
+            if (hasApp && hasFlutter) return dir
+        }
+        return null
+    }
+
+    /**
+     * 安装目录里的 ABI 子目录名用的是 **cpuAbi 简称**（`lib/arm64`、`lib/arm`），
+     * 与 APK 内部的 ABI 目录名（`lib/arm64-v8a`、`lib/armeabi-v7a`）并不相同 ——
+     * 只按 APK 内的名字去找会永远 miss。两种写法都试。
+     */
+    private fun abiDirectoryNames(requestedAbi: String): List<String> = when {
+        requestedAbi.isBlank() || requestedAbi == "auto" ->
+            listOf("arm64-v8a", "arm64", "armeabi-v7a", "arm", "x86_64", "x86")
+
+        requestedAbi.startsWith("arm64") -> listOf("arm64-v8a", "arm64")
+
+        requestedAbi.startsWith("armeabi") -> listOf("armeabi-v7a", "arm")
+
+        else -> listOf(requestedAbi)
     }
 
     private fun libraryFilesFromDirectory(dir: File, path: String, abi: String, jobInput: File): FlutterLibraryFiles {

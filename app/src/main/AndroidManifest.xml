@@ -83,10 +83,26 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!--
+            【修复 A/E】Blutter runner 进程。
+            `android:isolatedProcess="true"` 已移除此处 —— 见 SoReverseApplication.onCreate
+            与 docs/11.Flutter与Blutter.md 的说明：
+
+              * 隔离进程（独立 uid，如 99040）里 UserManager 不可用，任何
+                SharedPreferences 访问都会抛 IllegalStateException，Application
+                初始化直接把 runner 进程打死（表现为启动 ~0.85s 即 RUNNER_CRASHED）。
+              * 跳过 Application 初始化后，runner 仍会在 blutter_run_fd 入口附近
+                SIGSEGV（fault addr 0xffffffffffffffff，典型的 mmap/read 返回 -1
+                后未校验），因为隔离进程的 SELinux 域几乎不允许正常工作所需的
+                系统访问。
+
+            改为普通独立进程：崩溃仍然只影响 `:blutter`，主 MCP 进程不受影响
+            （这是隔离真正的价值）；而 runner 是我们随 APK 一起编译、签名的可信
+            代码，不需要 uid 级隔离。服务本身 exported=false，只有同应用可调用。
+        -->
         <service
             android:name=".blutter.BlutterRunnerService"
             android:exported="false"
-            android:isolatedProcess="true"
             android:process=":blutter" />
 
         <receiver

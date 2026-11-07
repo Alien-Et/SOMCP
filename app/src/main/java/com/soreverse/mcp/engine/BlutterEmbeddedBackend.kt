@@ -102,7 +102,11 @@ internal class BlutterEmbeddedBackend(private val context: Context, private val 
             ) {
                 finishFailure(
                     "RUNNER_INTERRUPTED",
-                    "The isolated runner process disconnected",
+                    "The Blutter runner process disconnected mid-analysis. The most common cause is the runner " +
+                        "aborting on a Dart snapshot it cannot parse \u2014 the device crash log carries the exact " +
+                        "assertion (for example DartTypes.cpp \"Invalid abstract type\"); the OS can also kill it " +
+                        "for memory. The main SOMCP process is unaffected. Retry with a snapshot whose engine " +
+                        "revision the runner actually lists, or inspect the APK fingerprint only.",
                     true,
                     "interrupted"
                 )
@@ -110,7 +114,13 @@ internal class BlutterEmbeddedBackend(private val context: Context, private val 
         }
 
         override fun onBindingDied(name: ComponentName) {
-            finishFailure("RUNNER_CRASHED", "The isolated runner process died", true, "interrupted")
+            finishFailure(
+                "RUNNER_CRASHED",
+                "The Blutter runner process died before finishing. Check the device crash log for the abort message " +
+                    "(DartTypes.cpp assertions mean the snapshot's Dart type encoding is not supported by this runner).",
+                true,
+                "interrupted"
+            )
         }
 
         override fun onNullBinding(name: ComponentName) {

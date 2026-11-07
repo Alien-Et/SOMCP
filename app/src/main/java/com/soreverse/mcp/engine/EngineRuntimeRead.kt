@@ -727,34 +727,80 @@ internal fun EngineRuntime.disasm(
     )
 }
 
+/**
+ * 【修复 C】analyze_outline 的函数解析。
+ *
+ * 旧实现只查 ELF 符号表（`elf.symbols + elf.dynSymbols`）：stripped 二进制里
+ * `symbols` 恒为 0，`dynSymbols` 又只剩导入/导出项，于是**任何** locator
+ * （完整 `so_function:<file>!<name>@0x<addr>`、短函数名、`0x<addr>`）都返回
+ * FUNCTION_NOT_FOUND —— 与 schema 描述的 "Accepts full locator from
+ * analyze_functions, short function name, or 0x... address" 不符，而
+ * analyze_cfg / read_disasm 用同一个 locator 都能成功。
+ *
+ * 现在按 ELF 符号 → Rizin 恢复函数的顺序解析；Rizin 侧同时接受
+ * 地址命中、Rizin 匿名函数名（`fcn.00001e14`）和"地址落在函数体内"。
+ */
+private data class OutlineTarget(val name: String, val addr: Long, val size: Long)
+
+private fun EngineRuntime.resolveOutlineTarget(
+    workspaceId: String,
+    editSessionId: String,
+    elf: ElfFile,
+    locator: String,
+    name: String
+): OutlineTarget? {
+    (elf.symbols + elf.dynSymbols).firstOrNull { it.name == name }?.let {
+        return OutlineTarget(it.name, it.value and -2L, it.size)
+    }
+    val va = LocatorParser.address(locator) ?: LocatorParser.hex(name)
+    val raw = runCatching {
+        NativeEngine.active().functions(dataFor(workspaceId, editSessionId), elf.architecture)
+    }.getOrNull() ?: return null
+    val arr = runCatching { JSONArray(raw) }.getOrNull() ?: return null
+    for (index in 0 until arr.length()) {
+        val fn = arr.optJSONObject(index) ?: continue
+        val fnName = fn.optString("name")
+        val addr = LocatorParser.hex(fn.optString("addr")) ?: continue
+        val size = fn.optLong("size", 0L)
+        val hit = (va != null && addr == va) ||
+            (fnName.isNotBlank() && fnName == name) ||
+            (va != null && size > 0 && va > addr && va < addr + size)
+        if (hit) return OutlineTarget(fnName.ifBlank { name }, addr, size)
+    }
+    return null
+}
+
 internal fun EngineRuntime.outline(workspaceId: String, editSessionId: String, locator: String, limit: Int): JSONObject = guarded {
     val elf = elfFor(workspaceId, editSessionId)
     val name = LocatorParser.target(locator, "so_function")
-    val sym =
-        (elf.symbols + elf.dynSymbols).firstOrNull { it.name == name }
-            ?: return@guarded err(
-                "FUNCTION_NOT_FOUND",
-                "Function not found",
-                "locator",
-                locator
-            )
-    val start = sym.value and -2L
+    val sym = (elf.symbols + elf.dynSymbols).firstOrNull { it.name == name }
+    val target = resolveOutlineTarget(workspaceId, editSessionId, elf, locator, name)
+        ?: return@guarded err(
+            "FUNCTION_NOT_FOUND",
+            "Function not found: $locator. Pass a locator from analyze_functions " +
+                "(so_function:<file>!<name>@0x<addr>), a named symbol, or a hex VA.",
+            "locator",
+            locator
+        )
+    val start = target.addr
+    val size = target.size
     ok(
         JSONObject()
             .put("locator", locator)
-            .put("name", name)
+            .put("name", target.name)
+            .put("resolvedBy", if (sym != null) "elf_symbol" else "rizin")
             .put("demangled", JSONObject.NULL)
             .put("startAddr", hex(start))
-            .put("endAddr", hex(start + sym.size))
-            .put("size", sym.size)
+            .put("endAddr", hex(start + size))
+            .put("size", size)
             .put(
                 "instructionCount",
                 if (elf.architecture in
                     setOf("arm32", "arm64", "mips")
                 ) {
-                    (sym.size / 4).toInt()
+                    (size / 4).toInt()
                 } else {
-                    sym.size.toInt()
+                    size.toInt()
                 }
             )
             .put(
@@ -768,7 +814,7 @@ internal fun EngineRuntime.outline(workspaceId: String, editSessionId: String, l
                         hex(start)
                     ).put(
                         "endAddr",
-                        hex(start + sym.size)
+                        hex(start + size)
                     ).put(
                         "instructionCount",
                         0
@@ -788,7 +834,6 @@ internal fun EngineRuntime.outline(workspaceId: String, editSessionId: String, l
             .put("loops", JSONArray())
     )
 }
-
 internal fun EngineRuntime.xrefSymbol(workspaceId: String, editSessionId: String, locator: String, refDirection: String, limit: Int): JSONObject = guarded {
     val elf = elfFor(workspaceId, editSessionId)
     val symbol = LocatorParser.target(locator, "so_symbol")
