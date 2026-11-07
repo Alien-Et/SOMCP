@@ -49,7 +49,7 @@ LIEF 重写与修复、补丁会话、构建导出、Flutter AOT 分析、JNI �
 ### Root 任意路径直读
 
 这是本分支最重要的改动。原版依赖 SAF 让用户授权一个「工作目录」，只能在目录内工作；本分支改为
-**有 root 就直接读任意路径**，不复制、不落盘、不产生副本。
+**有 root 就直接读任意路径**，主路径不复制、不落盘。
 
 原理：
 
@@ -68,13 +68,30 @@ ZipInputStream / ELF parser 边流边解析（APK 走流式，SO 走随机访问
 
 - App 自身仍是普通 uid（如 `u0_a380`），打不开 `/data/app`、`/data/data/<other>`；
   真正读文件的是 `cat` 子进程（euid=0）。
-- 全程管道，**没有任何临时文件**。
-- 386MB 的 APK 实测可解析（`analyzer: builtin_apk_zip_root_stream`，14473 个条目），
+- 读 APK 走纯管道，**不产生临时文件**；386MB 的包实测 21 秒解析完（14473 个条目），
   内存只占几百 KB 的 buffer。
-- 失败兜底链：root 流 → 普通 `File.readBytes()` → 报错并说明 `root available=...`。
+- **能直读的优先直读**：`File.canRead()` 为真的文件走 `analyzeFile`（随机访问，
+  解析完整）；只有 App 读不到的路径（`/data/data` 私有、权限 000/600）才走 root 流。
+- **少数需要随机访问的工具会落一份临时副本**，落点在 App 私有缓存，用完即删：
+  - `flutter_blutter` → `cache/flutter-inspect/`
+  - 4 个 `apk_*` 审计工具对 root-only 路径 → `cache/apk-audit/`
+  - 都不写 `/sdcard`，不碰被测 App 的目录。
+- 失败兜底链：root 流 → 普通 `File.readBytes()` → 结构化错误（`APK_INVALID` /
+  `APK_READ_FAILED` / `APK_TOO_LARGE_FOR_AUDIT`），不会再出现「假成功」。
+
+**`apk_analyze` 的两条解析路径**：
+
+| 路径 | parser 标识 | manifest / dex | sha256 |
+| --- | --- | --- | --- |
+| App 可直读 | `builtin_apk_zip_streaming` | 真实解析 | 全文件，稳定 |
+| root-only | `builtin_apk_zip_root_stream` | 真实解析 | 全文件，稳定 |
+
+两条路径都做 ZIP magic 校验：传 `.so` / 文本 / 目录 / 空文件会明确返回 `APK_INVALID`，
+不会返回「0 个条目但 ok:true」的空结果。
 
 首页常驻 **Root 状态卡**：已授权显示绿色「Root 已授权」，未授权显示橙色「未获得 Root 权限」并给出
-KernelSU / Magisk 授权指引，两种状态都可点「重新检测」（无需重启 App）。
+KernelSU / Magisk 授权指引，两种状态都可点「重新检测」。root 探测每 30 秒一次（不是 1 秒），
+避免无谓的 `su` 进程 fork。
 
 ### 无 root 也能用
 
@@ -185,11 +202,17 @@ APK 分析：
 
 ```text
 apk_analyze(path="/data/app/~~xxx==/com.foo-yyy==/base.apk")
-flutter_blutter(action=inspect, path="/data/app/~~xxx==/com.foo-yyy==/base.apk")
+flutter_blutter(action="inspect", path="/data/app/~~xxx==/com.foo-yyy==/base.apk")
+apk_sig_verify(path="/data/app/~~xxx==/com.foo-yyy==/base.apk")
 ```
 
-> `so_open(action=open_url)` 仍需要先选工作目录才能下载落盘。这是唯一保留 SAF 的地方，
-> 因为下载文件总得有个存放位置；日常分析走 `path=` 直连，完全不需要它。
+返回里的 `parser` 字段标明走了哪条路径：`builtin_apk_zip_streaming`（App 可直读）
+或 `builtin_apk_zip_root_stream`（root 流）。两者都会返回真实的
+`manifest` / `dexFiles`（含 DEX 头）/ `resourcesArsc` / 全文件 `sha256`。
+
+> `so_open(action=open_url)` 在没有 SAF 工作目录时会把下载的 `.so` 落到
+> App 外部私有目录 `files/downloads/`（不需要任何存储权限）。
+> 日常分析走 `path=` 直连，完全不需要工作目录。
 
 ---
 
@@ -386,6 +409,57 @@ bash build-native-android.sh
 - **免 key**：`authEnabled` 默认 `false` + `lanNoAuthMigrated_v1` 迁移
 
 ### 修复
+
+**APK 分析正确性**
+
+- `apk_analyze` 的 `sha256` 曾经是错的且不稳定：root 流路径用 `DigestInputStream`
+  包住 `ZipInputStream`，而后者读到 central directory 就停，摘要只覆盖了「前 N 字节」，
+  且 N 随内部缓冲预读量漂移 —— 同一个 386MB 包两次调用会得到两个不同的 hash
+  （实测在 `fd53cae8…` 与 `2bd19f75…` 之间摆动）。现在 ZIP 遍历结束后继续把剩余
+  字节读完再收摘要，两条路径都返回真正的全文件 sha256。
+- `apk_analyze` 对非 ZIP 输入曾经返回 `ok:true` + `entryCount:0`：root 分支在 magic
+  校验之前就 `return` 了，而 `analyzeRootStream` 自己没做校验。现在三条入口
+  （`analyze` / `analyzeFile` / `analyzeRootStream`）都先验 4 字节 magic，
+  `.so` / 文本 / 目录 / 空文件一律返回 `APK_INVALID` 并带上实际 magic 值。
+- `analyzeRootStream` 的 `manifest` / `resourcesArsc` / `parsedBytes` / `flutter`
+  曾经是「声明后从未赋值」的常量，等于什么都没解析。现在会真正读取
+  `AndroidManifest.xml` 和 `classes*.dex` 并解析出 DEX 头（methodIds / classDefs 等），
+  Flutter 判定复用已收集的条目清单。
+- `analyzeFile`（App 可直读路径）同样补上了 manifest / dex 真实解析与 magic 校验。
+- `analyzeApk` 曾对同一个文件开两次 root 流（先 probe 再解析），386MB 包白读一遍。
+  现在能直读的走 `analyzeFile`，不能直读的只开一次 root 流。
+
+**Root 通道健壮性**
+
+- `RootShell.readBytes` 的超时形同虚设：`timeout` 变量算出来后从未使用，
+  `waitFor` 排在「读完 stdout」之后 —— `cat` 卡在 FUSE/NFS 上时 `input.read()`
+  会永久阻塞。现在用看门狗定时器到点强杀子进程，让阻塞的 read 抛异常返回。
+- `RootShell.readBytes` 不抽 stderr，`cat` 写满 64KB pipe 缓冲后会与 App 互等死锁。
+  现在 stderr 由守护线程抽干。
+- `RootShell.openStream` 不检查子进程退出码，`cat <目录>` / `cat <不存在文件>`
+  也返回「非 null 但立即 EOF」的流，上层无法区分空文件与读取失败。现在读到 EOF
+  时校验退出码，非 0 抛 `IOException` 并带上 stderr 内容。
+- 支持 `expectedSize` 参数：`cat` 中断导致字节数偏少时会明确报「截断」。
+
+**其它**
+
+- `so_open(action=open_url)` 曾经强制要求 SAF 工作目录，而工作目录 UI 已删，
+  等于永久不可用。现在没有工作目录时落到 App 外部私有目录 `files/downloads/`。
+- `so_open` 的错误 `badValue` 曾被拼成 `"/data/local/tmp (root available=true)"`，
+  现在只返回原始路径。
+- `EngineRuntime.guarded` 曾把所有 `IOException` 吞成一句无信息的
+  `"I/O operation failed while handling the request."`，现在带上原始消息。
+- 4 个 `apk_*` 审计工具曾对任何 APK 一律 `readBytes()` 整包进堆（386MB 包占 386MB 堆）。
+  现在读入前按真实堆余量检查，放不下返回 `APK_TOO_LARGE_FOR_AUDIT` 并建议改用
+  流式 `apk_analyze`；root-only 路径先流式落临时文件再读，用完即删。
+- `flutter_blutter` 曾对 root-only 路径报 `EACCES`（`isFile` 为 true 但 `open()` 被拒）。
+  现在先流式落 App 私有缓存再解析，`inspect` 同时接受 `.zip`。
+- 首页 Root 状态卡曾 1Hz 轮询，每次 `su -c id` 约 25ms —— 一天 86400 次 fork。
+  现在降到 30 秒一次。
+- `UnidbgEmulator.writeTemp` 的 `deleteOnExit()` 在 Android 上不可靠（进程被 kill
+  时不执行），`cache/unidbg` 会堆残留 `.so`。现在写之前先清理 5 分钟前的旧文件。
+
+**构建 / CI**
 
 - `UnidbgEmulator` 的 ABI 判定：`endsWith("64")` → `contains("64")`
   （`arm64-v8a` 结尾是 `v8a` 不是 `64`，原逻辑恒 false，导致 arm64 设备误报 32 位）
