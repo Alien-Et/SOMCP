@@ -106,7 +106,7 @@ class UnidbgEmulator(private val context: Context) {
             val abi64Bit = runCatching {
                 val supported = android.os.Build.SUPPORTED_ABIS
                 val primary = supported.firstOrNull()
-                primary?.endsWith("64") ?: false
+                primary?.contains("64") ?: false
             }.getOrDefault(
                 System.getProperty("os.arch")?.endsWith("64") ?: false
             )
@@ -244,7 +244,7 @@ class UnidbgEmulator(private val context: Context) {
         fun unavailableReason(): String {
             val abi64Bit = runCatching {
                 val primary = android.os.Build.SUPPORTED_ABIS.firstOrNull()
-                primary?.endsWith("64") ?: false
+                primary?.contains("64") ?: false
             }.getOrDefault(
                 System.getProperty("os.arch")?.endsWith("64") ?: false
             )
@@ -323,7 +323,7 @@ class UnidbgEmulator(private val context: Context) {
         if (!ensureNativeLibraries()) return@runCatching false
         val abi64Bit = runCatching {
             val primary = android.os.Build.SUPPORTED_ABIS.firstOrNull()
-            primary?.endsWith("64") ?: false
+            primary?.contains("64") ?: false
         }.getOrDefault(
             System.getProperty("os.arch")?.endsWith("64") ?: false
         )
