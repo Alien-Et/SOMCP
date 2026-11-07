@@ -164,18 +164,30 @@ jobs:
       # do not exist as repository secrets, so the previous configuration could
       # never have produced a signed APK even past the gradlew failure.
       - name: Restore release signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE }}
+          KS_ALIAS: ${{ secrets.ALIAS }}
+          KS_ALIAS_PASS: ${{ secrets.ALIAS_PASSWORD }}
+          KS_STORE_PASS: ${{ secrets.PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -z "${{ secrets.KEYSTORE }}" ] \
-             || [ -z "${{ secrets.ALIAS }}" ] \
-             || [ -z "${{ secrets.ALIAS_PASSWORD }}" ] \
-             || [ -z "${{ secrets.PASSWORD }}" ]; then
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KS_ALIAS" ] \
+             || [ -z "$KS_ALIAS_PASS" ] || [ -z "$KS_STORE_PASS" ]; then
             echo "::error::Signing secrets (KEYSTORE/ALIAS/ALIAS_PASSWORD/PASSWORD) must all be configured."
             exit 1
           fi
           mkdir -p release
-          echo "${{ secrets.KEYSTORE }}" | base64 -d > release/so-reverse-mcp-release.jks
-          echo "Restored release signing keystore from secrets."
+          # 清掉复制时可能混入的空白/换行，再解码；避免 GitHub secrets 里的
+          # 尾随空格或换行让 base64 -d 报 invalid input。
+          printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > release/so-reverse-mcp-release.jks
+          # 解码后用 keytool 校验 keystore 与密码确实可用，失败时立刻定位问题。
+          if ! keytool -list -keystore release/so-reverse-mcp-release.jks \
+               -storepass "$KS_STORE_PASS" -alias "$KS_ALIAS" >/dev/null 2>&1; then
+            echo "::error::KEYSTORE 解码后校验失败：base64 不完整/被截断，或 ALIAS/PASSWORD 与密钥库不匹配。"
+            echo "::error::KEYSTORE 字符数（去空白后）: $(printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | wc -c)"
+            exit 1
+          fi
+          echo "Restored and verified release signing keystore from secrets."
 
       - name: Build release APKs
         env:
