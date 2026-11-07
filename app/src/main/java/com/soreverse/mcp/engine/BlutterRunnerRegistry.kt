@@ -103,6 +103,20 @@ internal object BlutterRunnerMatcher {
  * Split out of [BlutterRunnerRegistry] so the compatibility-key derivation can be
  * tested against a synthetic manifest without an Android `Context`.
  */
+/**
+ * runner 的"库定位串"：
+ *
+ *  - 内置 runner：库名 `blutter_<compatibilityKey>` —— 由 linker 在 namespace
+ *    里搜索，命中 APK 的 native lib 目录；
+ *  - 本地 runner：**绝对路径**（应用私有目录里按需下载的那个 .so）——
+ *    见 [BlutterEngineStore]，native 侧见到 `/` 开头就走绝对路径 dlopen。
+ *
+ * 两处都要放行，否则本地 runner 会在解析 manifest 时被静默丢弃。
+ */
+internal fun validRunnerLibrary(value: String): Boolean =
+    value.matches(Regex("^blutter_[A-Za-z0-9_]+$")) ||
+        (value.startsWith("/") && value.endsWith(".so") && !value.contains(".."))
+
 internal object BlutterRunnerManifest {
     /** Numeric-aware ordering so 3.44.10 sorts after 3.44.7. */
     val VERSION_ORDER: Comparator<String> = Comparator { left, right ->
@@ -137,7 +151,7 @@ internal object BlutterRunnerManifest {
                 return@mapNotNull null
             }
             val libraryName = item.optString("libraryName")
-            if (!libraryName.matches(Regex("^blutter_[A-Za-z0-9_]+$"))) return@mapNotNull null
+            if (!validRunnerLibrary(libraryName)) return@mapNotNull null
             val aliases = stringList(item.optJSONArray("snapshotAliases"))
             val engineRevisions = (
                 stringList(item.optJSONArray("engineRevisions")) +
@@ -234,8 +248,21 @@ internal object BlutterRunnerManifest {
 internal class BlutterRunnerRegistry(private val context: Context) {
     private val manifest by lazy { loadManifest() }
     val upstreamCommit: String get() = manifest.optString("upstreamCommit")
+    /**
+     * 内置 runner（APK 的 jniLibs）+ 本地 runner（应用私有目录里按需下载的）。
+     *
+     * 两者都参与 `BlutterRunnerMatcher` 打分；`runnerId` 撞车时**内置优先**
+     * （内置经过构建流水线校验，可信度更高）。本地 runner 只在需要某个内置
+     * 未覆盖的 Dart 版本时才会被选中。
+     */
     val runners: List<BlutterRunnerDescriptor> by lazy {
-        BlutterRunnerManifest.runners(manifest, "embedded")
+        val embedded = BlutterRunnerManifest.runners(manifest, "embedded")
+        val local = runCatching { BlutterEngineStore(context).localRunners() }.getOrDefault(emptyList())
+        if (local.isEmpty()) {
+            embedded
+        } else {
+            embedded + local.filter { candidate -> embedded.none { it.runnerId == candidate.runnerId } }
+        }
     }
 
     fun select(requirement: BlutterRunnerRequirement): BlutterRunnerDescriptor? = BlutterRunnerMatcher.select(requirement, runners)
@@ -250,6 +277,8 @@ internal class BlutterRunnerRegistry(private val context: Context) {
         .put("execution", "all_in_one_apk")
         .put("fullyOffline", true)
         .put("runnerCount", runners.size)
+        .put("embeddedRunnerCount", runners.count { it.source == "embedded" })
+        .put("localRunnerCount", runners.count { it.source == BlutterEngineStore.SOURCE_LOCAL })
         .put("supportedVersions", supportedSummary())
 
     fun supportedSummary(): JSONObject = BlutterRunnerManifest.supportedSummary(runners)

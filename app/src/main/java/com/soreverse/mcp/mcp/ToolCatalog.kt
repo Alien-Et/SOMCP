@@ -205,8 +205,8 @@ object ToolCatalog {
     private val flutterBlutter = EngineToolHandler(
         ToolMeta(
             "flutter_blutter",
-            "Flutter AOT/Blutter 聚合工具：识别 Flutter APK、提取版本指纹，并使用内置 Flutter 3.44.x / Dart 3.12.2 arm64 Runner 完成本地分析。其他版本会明确返回不支持。",
-            "Aggregated Flutter AOT and Blutter tool using the embedded Flutter 3.44.x / Dart 3.12.2 arm64 runner. Other versions return an explicit unsupported-version result.",
+            "Flutter AOT/Blutter 聚合工具：识别 Flutter APK、提取版本指纹，并用内置或本地（按需下载到应用私有目录的）Blutter Runner 完成本地分析。\n内置 Runner 只覆盖 Flutter 3.44.x / Dart 3.12.2；其他版本请用 action=engines 查看本地 Runner 目录，把 dartvm_<dartVersion>.so 放进去即可被自动发现并加载。",
+            "Aggregated Flutter AOT and Blutter tool. Fingerprints a Flutter APK and analyses it with an embedded or local Blutter runner. The embedded runner only covers Flutter 3.44.x / Dart 3.12.2; for other versions use action=engines to see the local runner directory and drop a dartvm_<dartVersion>.so in it — it is discovered and dlopen'd by absolute path.",
             "analyze",
             ToolClass.CORE,
             heavy = true
@@ -214,14 +214,15 @@ object ToolCatalog {
             objectSchema(
                 props {
                     "action".oneOf(
-                        "inspect | analyze | status | result | cancel | packages | prune",
+                        "inspect | analyze | status | result | cancel | packages | prune | engines",
                         "inspect",
                         "analyze",
                         "status",
                         "result",
                         "cancel",
                         "packages",
-                        "prune"
+                        "prune",
+                        "engines"
                     )
                     "path" str "APK path or directory containing libapp.so and libflutter.so."
                     "jobId" str "Persistent Blutter job id for status, result, or cancel."

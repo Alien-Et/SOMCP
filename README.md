@@ -538,9 +538,21 @@ bash build-native-android.sh
 - `FLUTTER_VERSION_NOT_SUPPORTED` 现在带 **`missingRunner`** 规格
   （dartVersion / engineRevision / snapshotHash / abi / compressedPointers），
   可直接拿去构建；同时说明为什么 runner 不能运行时下载。
-- 结论：Blutter 兼容单位是 **snapshotHash**（一个 hash 覆盖多个 Flutter 版本），
-  而 runner **必须随 APK 分发**（`dlopen` 只能命中 APK 的 native lib 目录，
-  Android 10+ 禁止从可写目录加载）。增量支持走「按需构建 / 多产物 / runner 合并」。
+**第四轮：Blutter 引擎按需下载（local runner）**
+
+- ⚠️ **纠正上一轮的结论**：当时写的「runner 必须随 APK 分发、无法运行时下载」是**错的**。
+  Android 限制的是外部存储那类「其他方可能篡改」的位置，**应用自己的 `files/`
+  目录可以 `dlopen`** —— `myfler/fler-dart` 就是这么做的（`files/engines/` 下
+  32 个 `dartvm_<ver>.so`，`targetSdk=36` 正常工作，实测 388 MB）。
+- SoMCP 现在支持两条 runner 来源：内置（APK 的 jniLibs，按库名加载）与
+  **本地（`files/blutter-engines/`，按绝对路径加载）**。把
+  `dartvm_<dartVersion>.so` 丢进该目录即被自动发现；`runners.local.json`
+  可显式描述，且描述里的 sha256 与实际文件不符时**拒绝加载**。
+- 新增 `flutter_blutter(action=engines)` 查看目录与已发现的 runner；
+  `tools/blutter-matrix/export_engines.py` + `.github/workflows/blutter-engines.yml`
+  把既有构建产物导出成按需下载包（`curated-versions.json` 已覆盖
+  `3.11.5 / 3.12.2 / 3.13.0 / 3.13.1` + 4 个 beta，正好覆盖本机实测遇到的版本）。
+- 体积账：一个 runner 约 12.6 MB；覆盖设备上全部 Flutter 应用只需 **2–3 个版本 ≈ 25–38 MB**。
 
 ---
 

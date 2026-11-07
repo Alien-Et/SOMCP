@@ -56,6 +56,11 @@ internal class BlutterCoordinator(
 
         "prune" -> ok(store.prune(args.optLong("olderThanMillis", 7L * 24 * 60 * 60 * 1000)))
 
+        // 【新增】本地（按需下载）runner 目录概览：内置 runner 只能覆盖一两个
+        // Dart 版本，其余版本允许把 dartvm_<dartVersion>.so 放进应用私有目录，
+        // 由 registry 自动发现后用绝对路径 dlopen 加载。
+        "engines" -> ok(BlutterEngineStore(context).overview())
+
         else -> err(
             "UNKNOWN_ACTION",
             "Unsupported flutter_blutter action",

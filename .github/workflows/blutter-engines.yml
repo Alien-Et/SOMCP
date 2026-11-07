@@ -1,0 +1,145 @@
+name: Build Blutter engines (on-demand runners)
+
+# 按 Dart 版本构建 Blutter runner，并导出成"运行时按需下载"的包。
+#
+# 背景：内置 runner 必须打进 APK 的 jniLibs，每个 Dart 版本约 12 MB（stripped），
+# 想覆盖多版本会把 APK 撑爆。而 runner 完全可以下载到应用私有目录后
+# `dlopen` 绝对路径 —— Android 限制的是外部存储那类"其他方可能篡改"的位置，
+# 应用自己的 files/ 是可加载的（native bridge 两种形态都支持）。
+#
+# 因此这个工作流不产出 APK，只产出引擎包：
+#   dist/blutter-engines/
+#     dartvm_<dartVersion>.so     每个 Dart 版本一个 runner
+#     runners.local.json          SoMCP 的 BlutterEngineStore 直接读取
+#     engines-manifest.json       清单（sha256 + 体积），供发布端/下载端使用
+#
+# 装到设备上只要把 dartvm_*.so 与 runners.local.json 一起放进
+#   <app files>/blutter-engines/
+# （`flutter_blutter(action=engines)` 会打印这个绝对路径）
+
+on:
+  workflow_dispatch:
+    inputs:
+      dartVersions:
+        description: 'Comma-separated Dart versions to build (empty = tools/blutter-matrix/curated-versions.json)'
+        required: false
+        default: ''
+      packVersion:
+        description: 'Label recorded in engines-manifest.json (empty = today)'
+        required: false
+        default: ''
+      publishRelease:
+        description: 'Publish the pack as a GitHub Release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-engines:
+    runs-on: ubuntu-latest
+    # A Dart VM cross-compile per version is slow; the driver parallelises with
+    # BLUTTER_JOBS but a full curated run can still take hours.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      - name: Init submodules
+        run: bash tools/init-submodules.sh
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.1"
+          cache-disabled: true
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build meson gcc g++ pkg-config
+
+      - name: Narrow the curated list (optional)
+        if: ${{ inputs.dartVersions != '' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          requested = [v.strip() for v in os.environ["REQUESTED"].split(",") if v.strip()]
+          path = pathlib.Path("tools/blutter-matrix/curated-versions.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          selected = [v for v in data["dartVersions"] if v in requested]
+          unknown = [v for v in requested if v not in data["dartVersions"]]
+          if unknown:
+              raise SystemExit(f"not in curated-versions.json: {unknown}")
+          if not selected:
+              raise SystemExit("no curated version matched")
+          data["dartVersions"] = selected
+          path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          print(f"building {selected}")
+          PY
+        env:
+          REQUESTED: ${{ inputs.dartVersions }}
+
+      - name: Build Blutter runners
+        env:
+          BLUTTER_JOBS: "4"
+        run: |
+          set -euo pipefail
+          bash tools/blutter-matrix/build-blutter-runners.sh
+
+      - name: Export on-demand engine pack
+        run: |
+          set -euo pipefail
+          python3 tools/blutter-matrix/export_engines.py \
+            --manifest build/blutter-matrix/staging/runners.json \
+            --jni-root build/blutter-matrix/staging/jniLibs \
+            --out dist/blutter-engines \
+            ${{ inputs.packVersion != '' && format('--pack-version {0}', inputs.packVersion) || '' }}
+
+      - name: Summarise the pack
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          pack = json.loads(pathlib.Path("dist/blutter-engines/engines-manifest.json").read_text())
+          print("## Blutter engine pack")
+          print()
+          print(f"- pack version: `{pack['packVersion']}`")
+          print(f"- engines: **{pack['engineCount']}**, total **{pack['totalBytes']/1048576:.1f} MB**")
+          print()
+          print("| dartVersion | file | size |")
+          print("| --- | --- | --- |")
+          for engine in pack["engines"]:
+              print(f"| {engine['dartVersion']} | `{engine['file']}` | {engine['sizeBytes']/1048576:.1f} MB |")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blutter-engines
+          path: dist/blutter-engines/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: ${{ inputs.publishRelease }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="blutter-engines-${{ inputs.packVersion != '' && inputs.packVersion || github.run_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; uploading assets"
+          else
+            gh release create "$TAG" \
+              --title "Blutter engines ${TAG#blutter-engines-}" \
+              --notes "On-demand Blutter runner pack. Drop \`dartvm_*.so\` and \`runners.local.json\` into \`<app files>/blutter-engines/\` (see \`flutter_blutter(action=engines)\`)."
+          fi
+          gh release upload "$TAG" dist/blutter-engines/* --clobber
