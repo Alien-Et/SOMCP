@@ -11,6 +11,9 @@ import org.json.JSONObject
 
 internal class ApkAnalysisLimitException(message: String) : IllegalArgumentException(message)
 
+/** 输入不是 ZIP/APK（magic 不匹配）。调用方应映射为 APK_INVALID。 */
+internal class ApkNotZipException(message: String) : IllegalArgumentException(message)
+
 internal object ApkAnalyzer {
     /**
      * 【魔改】APK 输入上限。
@@ -41,6 +44,9 @@ internal object ApkAnalyzer {
                 "APK exceeds ${MAX_INPUT_BYTES / 1024 / 1024} MiB input limit"
             )
         }
+        // 【修复】旧实现没有 magic 校验：把 .so / 文本 / 空文件丢进来
+        // 会得到一份「0 个条目但 ok:true」的空结果。现在先读 4 字节判定。
+        requireZipMagic(file, path)
         val digest = MessageDigest.getInstance("SHA-256")
         val entries = JSONArray()
         val nativeLibs = JSONArray()
@@ -89,6 +95,22 @@ internal object ApkAnalyzer {
                 ) {
                     signatures.put(name)
                 }
+                if (!entry.isDirectory && name == "resources.arsc") resourcesArsc = true
+                // 【修复】旧实现只收集条目名，manifest / dex / parsedBytes
+                // 声明后从未赋值，永远是 present:false / 0 —— 等于什么都没解析。
+                // 现在对 AndroidManifest.xml 和 classes*.dex 读内容做真实解析。
+                val shouldParse = !entry.isDirectory &&
+                    (name == "AndroidManifest.xml" ||
+                        name.matches(Regex("^classes(?:[2-9][0-9]*)?\\.dex$")))
+                if (shouldParse) {
+                    val data = readEntry(zip, name, limits, parsedBytes)
+                    parsedBytes += data.size
+                    if (name == "AndroidManifest.xml") {
+                        manifest = parseManifestSummary(data)
+                    } else {
+                        dexFiles.put(parseDexHeader(name, data))
+                    }
+                }
                 zip.closeEntry()
             }
         }
@@ -127,10 +149,38 @@ internal object ApkAnalyzer {
     /**
      * 【魔改】任意受保护路径的 APK 分析：root 的 `cat` 管道 → ZipInputStream
      * 流式解析，不进堆、不落盘副本。用于 App 直读 EACCES 时的兜底。
+     *
+     * 【修复 1】旧实现用 DigestInputStream 包住 ZipInputStream 的输入，
+     * 而 ZipInputStream 读到 central directory 就停了，不会把文件读完 ——
+     * 于是 sha256 只覆盖了「前 N 字节」，且 N 随内部缓冲预读量漂移，
+     * 同一个文件两次调用会得到两个不同的 hash（实测 386MB 包在
+     * fd53cae8… 与 2bd19f75… 之间摆动）。现在改成：ZIP 遍历结束后
+     * 继续把流里剩余字节全部读完再收摘要，得到的是真正的全文件 sha256。
+     *
+     * 【修复 2】旧实现没有 ZIP magic 校验，空流/ELF/文本都会返回
+     * 「entryCount=0, ok=true」。现在先读 4 字节做 magic 判断，
+     * 不是 ZIP 直接抛 [ApkNotZipException]。
+     *
+     * 【修复 3】旧实现的 manifest / resourcesArsc / parsedBytes / flutter
+     * 全是声明后从未赋值的常量，等于什么都没解析。现在对
+     * AndroidManifest.xml / classes*.dex 做真实解析（流内单条目读取），
+     * Flutter 检测复用已经收集到的条目清单。
      */
     fun analyzeRootStream(path: String, entryLimit: Int, limits: Limits = Limits()): JSONObject {
-        val stream = RootShell.openStream(path)
+        val declaredSize = RootShell.fileSize(path) ?: -1L
+        if (declaredSize > MAX_INPUT_BYTES) {
+            throw ApkAnalysisLimitException(
+                "APK exceeds ${MAX_INPUT_BYTES / 1024 / 1024} MiB input limit"
+            )
+        }
+        // 目录不是 ZIP：openStream 的 exit-code 检查会抛 IOException，
+        // 这里提前用 isDirectory 给一个更明确的错误。
+        if (RootShell.isDirectory(path)) {
+            throw ApkNotZipException("$path is a directory, not a ZIP/APK file")
+        }
+        val stream = RootShell.openStream(path, declaredSize)
             ?: throw java.io.IOException("root stream unavailable for $path")
+
         val digest = MessageDigest.getInstance("SHA-256")
         val entries = JSONArray()
         val nativeLibs = JSONArray()
@@ -141,10 +191,33 @@ internal object ApkAnalyzer {
         var resourcesArsc = false
         var totalEntries = 0
         var parsedBytes = 0L
-        var size = 0L
+        var totalRead = 0L
+        val boundedEntryLimit = entryLimit.coerceIn(1, 5000)
+
         stream.use { input ->
-            val digestInput = java.security.DigestInputStream(input, digest)
-            ZipInputStream(digestInput.buffered()).use { zip ->
+            val counting = CountingInputStream(input) { n, buf, off ->
+                digest.update(buf, off, n)
+            }
+            val buffered = java.io.BufferedInputStream(counting, 64 * 1024)
+            // magic 校验：ZIP 本地文件头固定是 50 4B 03/05/07
+            val magic = ByteArray(4)
+            var magicLen = 0
+            while (magicLen < 4) {
+                val n = buffered.read(magic, magicLen, 4 - magicLen)
+                if (n < 0) break
+                magicLen += n
+            }
+            if (magicLen < 4 || magic[0] != 0x50.toByte() || magic[1] != 0x4b.toByte()) {
+                throw ApkNotZipException(
+                    "$path is not a ZIP/APK file (magic=${magic.take(magicLen).joinToString("") { "%02x".format(it) }})"
+                )
+            }
+            // 【关键】ZipInputStream.close() 会关掉它包装的流。用一层
+            // NonClosing 包装，让它在 use 块结束时不去关 buffered ——
+            // 否则下面读 ZIP 尾部时立刻抛 "Stream closed"。
+            val nonClosing = NonClosingInputStream(buffered)
+            val replay = java.io.SequenceInputStream(java.io.ByteArrayInputStream(magic, 0, magicLen), nonClosing)
+            ZipInputStream(replay).use { zip ->
                 while (true) {
                     val entry = zip.nextEntry ?: break
                     totalEntries++
@@ -152,11 +225,12 @@ internal object ApkAnalyzer {
                         throw ApkAnalysisLimitException("APK contains more than ${limits.maxEntries} entries")
                     }
                     val name = entry.name
-                    if (entries.length() < entryLimit.coerceIn(1, 5000)) {
+                    val declaredEntrySize = entry.size
+                    if (entries.length() < boundedEntryLimit) {
                         entries.put(
                             JSONObject()
                                 .put("name", name)
-                                .put("size", entry.size.takeIf { it >= 0 } ?: -1L)
+                                .put("size", declaredEntrySize.takeIf { it >= 0 } ?: -1L)
                                 .put("compressedSize", entry.compressedSize)
                                 .put("directory", entry.isDirectory)
                         )
@@ -164,7 +238,10 @@ internal object ApkAnalyzer {
                     if (!entry.isDirectory && name.matches(Regex("^lib/[^/]+/[^/]+\\.so$"))) {
                         val abi = name.split('/')[1]
                         abis.add(abi)
-                        nativeLibs.put(JSONObject().put("name", name).put("abi", abi))
+                        nativeLibs.put(
+                            JSONObject().put("name", name).put("abi", abi)
+                                .put("size", declaredEntrySize.takeIf { it >= 0 } ?: -1L)
+                        )
                     }
                     if (!entry.isDirectory && name.endsWith(".dex", true)) dexFiles.put(name)
                     if (!entry.isDirectory && name.startsWith("META-INF/") &&
@@ -172,14 +249,38 @@ internal object ApkAnalyzer {
                             name.endsWith(".EC", true) || name.endsWith(".SF", true) ||
                             name.endsWith("MANIFEST.MF", true))
                     ) signatures.put(name)
+                    if (!entry.isDirectory && name == "resources.arsc") resourcesArsc = true
+                    // 真正解析：只对这两个目标读内容，其余条目只走条目头
+                    val shouldParse = !entry.isDirectory &&
+                        (name == "AndroidManifest.xml" ||
+                            name.matches(Regex("^classes(?:[2-9][0-9]*)?\\.dex$")))
+                    if (shouldParse) {
+                        val data = readEntry(zip, name, limits, parsedBytes)
+                        parsedBytes += data.size
+                        if (name == "AndroidManifest.xml") {
+                            manifest = parseManifestSummary(data)
+                        } else {
+                            dexFiles.put(parseDexHeader(name, data))
+                        }
+                    }
                     zip.closeEntry()
                 }
             }
-            // 把 ZIP 尾部剩余字节也喂给摘要（DigestInputStream 已随流累计）
+            // 【修复 1】ZipInputStream 在 central directory 就停了，剩余字节
+            // 必须继续读空，sha256 才是整个文件的。ZipInputStream 内部缓冲里
+            // 多读的字节已经进过 digest，这里从 buffered 继续读不会重复计数。
+            val tail = ByteArray(64 * 1024)
+            while (true) {
+                val n = buffered.read(tail)
+                if (n < 0) break
+                totalRead += n
+            }
         }
-        size = RootShell.fileSize(path) ?: 0L
         val sha = digest.digest().joinToString("") { "%02x".format(it) }
-        val flutter = JSONObject()
+        val size = if (declaredSize >= 0) declaredSize else totalRead
+        val flutter = runCatching {
+            FlutterArtifactInspector.inspectFlutterFromEntries(entries, path)
+        }.getOrDefault(JSONObject())
         return JSONObject()
             .put("path", path)
             .put("size", size)
@@ -197,6 +298,61 @@ internal object ApkAnalyzer {
             .put("resourcesArsc", resourcesArsc)
             .put("flutter", flutter)
             .put("parsedBytes", parsedBytes)
+            .put(
+                "limitations",
+                JSONArray(
+                    listOf(
+                        "Streaming root path: only AndroidManifest.xml and classes*.dex payloads are parsed",
+                        "APK Signature Scheme v2/v3/v4 block verification is not included in this parser (use apk_sig_verify)"
+                    )
+                )
+            )
+    }
+
+    /** 读文件头 4 字节确认是 ZIP；不是就抛 [ApkNotZipException]。 */
+    private fun requireZipMagic(file: File, path: String) {
+        val magic = ByteArray(4)
+        val n = try {
+            FileInputStream(file).use { it.read(magic) }
+        } catch (t: Throwable) {
+            throw java.io.IOException("Unable to read $path: ${t.message}")
+        }
+        if (n < 4 || magic[0] != 0x50.toByte() || magic[1] != 0x4b.toByte()) {
+            throw ApkNotZipException(
+                "$path is not a ZIP/APK file (magic=${magic.take(maxOf(n, 0)).joinToString("") { "%02x".format(it) }})"
+            )
+        }
+    }
+
+    /** 统计流经的字节数，同时把每一段喂给摘要。 */
+    private class CountingInputStream(
+        private val delegate: java.io.InputStream,
+        private val onBytes: (Int, ByteArray, Int) -> Unit
+    ) : java.io.InputStream() {
+        override fun read(): Int {
+            val b = delegate.read()
+            if (b >= 0) {
+                val one = byteArrayOf(b.toByte())
+                onBytes(1, one, 0)
+            }
+            return b
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            val n = delegate.read(b, off, len)
+            if (n > 0) onBytes(n, b, off)
+            return n
+        }
+
+        override fun available(): Int = delegate.available()
+        override fun close() = delegate.close()
+    }
+
+    /** 让 ZipInputStream.close() 不要连带关掉底层流（尾部还要继续读）。 */
+    private class NonClosingInputStream(delegate: java.io.InputStream) : java.io.FilterInputStream(delegate) {
+        override fun close() {
+            // 故意不关：调用方在读完整包之后自己 close 底层
+        }
     }
 
     fun analyze(bytes: ByteArray, path: String, entryLimit: Int, limits: Limits = Limits()): JSONObject {
@@ -205,6 +361,14 @@ internal object ApkAnalyzer {
         ) {
             throw ApkAnalysisLimitException(
                 "APK exceeds ${MAX_INPUT_BYTES / 1024 / 1024} MiB input limit"
+            )
+        }
+        // 【修复】同上：内存路径也补 magic 校验。
+        if (bytes.size < 4 || bytes[0] != 0x50.toByte() || bytes[1] != 0x4b.toByte()) {
+            throw ApkNotZipException(
+                "$path is not a ZIP/APK file (magic=${
+                    bytes.take(4).joinToString("") { "%02x".format(it) }
+                })"
             )
         }
         val entries = JSONArray()

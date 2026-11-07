@@ -107,7 +107,14 @@ internal class EngineRuntime(internal val context: Context) {
 
             message.startsWith(
                 "SO path not found"
-            ) -> err("SO_NOT_FOUND", message, "path", message.substringAfter(": ", ""))
+            ) -> err(
+                "SO_NOT_FOUND",
+                message,
+                "path",
+                // 【修复】异常消息里不再拼 root 诊断，badValue 就是原始路径；
+                // 仍兼容老格式（万一有其它调用点拼了括号）。
+                message.substringAfter(": ", "").substringBefore(" (").trim()
+            )
 
             message.contains(
                 "Invalid URI",
@@ -121,7 +128,10 @@ internal class EngineRuntime(internal val context: Context) {
 
             error is java.io.IOException -> err(
                 "IO_ERROR",
-                "I/O operation failed while handling the request."
+                // 【修复】旧实现把所有 IOException 都吞成一句无信息的
+                // "I/O operation failed while handling the request."，
+                // 排查时完全看不到是哪个文件、什么原因。现在带上原始消息。
+                message.ifBlank { "I/O operation failed while handling the request." }
             )
 
             else -> err("ELF_CORRUPTED", message)

@@ -91,10 +91,18 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () 
     var keepAliveReady by remember { mutableStateOf(isKeepAliveReady(context, settings)) }
     // 【魔改】root 授权状态：KernelSU/Magisk 按 App uid 授权，没开时
     // root 扫描、受限目录读取都会静默失败。首页明确提醒用户去授权。
+    //
+    // 【修复】旧实现是 1Hz 轮询，每次 `RootShell.invalidate()` + `isAvailable()`
+    // 都会 fork 一个 `su -c id`（实测单次约 25ms），一天 86400 次 ——
+    // 白白烧电、刷爆 KernelSU 日志，而且息屏后也照跑。现在改为：
+    //  - 首次进入时测一次
+    //  - 之后每 30 秒测一次（授权/撤销仍能自动反映）
+    //  - 页面不可见时不测（LaunchedEffect 随 composition 生命周期）
     var rootGranted by remember { mutableStateOf(RootShell.isAvailable()) }
     LaunchedEffect(Unit) {
         // 【魔改】APK MCP 桥接已移除
         apkConnected = false
+        var rootTick = 0
         while (true) {
             running = McpForegroundService.isRunning()
             val typedPort = port.toIntOrNull() ?: settings.port
@@ -106,10 +114,14 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () 
             apkToolNames = emptyList()
             apkConnected = false
             keepAliveReady = isKeepAliveReady(context, settings)
-            // 用户在 KernelSU 里授权 / 撤销后无需重启 App：每次轮询清缓存重测，
-            // 卡片状态始终跟随真实 su 可用性（一次 `su -c id` 很轻）。
-            RootShell.invalidate()
-            rootGranted = RootShell.isAvailable()
+            // root 探测降频：每 30 次 1 秒轮询（=30 秒）重测一次。
+            // 用户在 KernelSU 里授权/撤销后最多 30 秒内自动反映，
+            // 也可以点状态卡上的「重新检测」立即重测。
+            if (rootTick == 0) {
+                RootShell.invalidate()
+                rootGranted = RootShell.isAvailable()
+            }
+            rootTick = (rootTick + 1) % 30
             delay(1_000)
         }
     }

@@ -2160,8 +2160,23 @@ class UnidbgEmulator(private val context: Context) {
         val safeName = symbolName.filter { it.isLetterOrDigit() || it == '_' }.take(48)
         val f = File(dir, "emu_${System.currentTimeMillis()}_$safeName.so")
         f.writeBytes(bytes)
+        // 【修复】deleteOnExit() 在 Android 上不可靠：进程被系统 kill 或
+        // force-stop 时 JVM 不会执行 shutdown hook，cache/unidbg 会一直堆
+        // 残留的 .so。这里改成：写之前先清理 5 分钟前的旧文件，
+        // 再配合 deleteOnExit 做 best-effort。
+        pruneStaleTempFiles(dir, keepMs = 5 * 60 * 1000L)
         f.deleteOnExit()
         return f
+    }
+
+    /** 清理 [dir] 下超过 [keepMs] 的 emu_*.so，避免 cache 无限增长。 */
+    private fun pruneStaleTempFiles(dir: File, keepMs: Long) {
+        runCatching {
+            val cutoff = System.currentTimeMillis() - keepMs
+            dir.listFiles { f -> f.isFile && f.name.startsWith("emu_") && f.name.endsWith(".so") }
+                ?.filter { it.lastModified() < cutoff }
+                ?.forEach { runCatching { it.delete() } }
+        }
     }
 
     private fun toArgList(argsJson: JSONArray): List<Any?> = (0 until argsJson.length()).map { i ->

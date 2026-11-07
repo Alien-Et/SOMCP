@@ -162,7 +162,7 @@ object RootShell {
      * 走 `su -c "cat <path>"`，用二进制管道直读，避免 base64 膨胀。
      * 大文件建议同时设置 [maxReadBytes]。
      */
-    fun readBytes(path: String, maxBytes: Long = 0L): ByteArray? {
+    fun readBytes(path: String, maxBytes: Long = 0L, timeoutMs: Long = 0L): ByteArray? {
         val su = suPath() ?: return null
         val limit = when {
             maxBytes > 0 -> maxBytes
@@ -178,16 +178,55 @@ object RootShell {
             }
         }
         var process: Process? = null
+        var watchdog: java.util.Timer? = null
+        var timedOut = false
         return try {
             val quoted = shellQuote(path)
             // head -c 在部分 busybox 上不兼容，改用 cat + 本地截断
             process = ProcessBuilder(su, "-c", "cat $quoted").start()
+            val proc = process
+            // 【修复】旧实现把超时变量算出来后就没用过（waitFor 用的是
+            // defaultTimeoutMs），而且 waitFor 排在「读完 stdout」之后 ——
+            // cat 卡在 FUSE/NFS 上不产出时 input.read() 会永久阻塞，
+            // 永远走不到 waitFor。现在用看门狗到点直接强杀进程，让阻塞的
+            // read 抛 IOException 返回，超时真正生效。
+            val timeout = if (timeoutMs > 0) timeoutMs else defaultTimeoutMs
+            val timer = java.util.Timer("rootshell-read-watchdog", true)
+            watchdog = timer
+            timer.schedule(object : java.util.TimerTask() {
+                override fun run() {
+                    timedOut = true
+                    runCatching { proc.destroyForcibly() }
+                }
+            }, timeout)
             val out = ByteArrayOutputStream()
+            // stderr 必须抽干，否则 cat 写满 64KB pipe 缓冲后会阻塞
+            val errBuf = StringBuilder()
+            val errThread = Thread({
+                runCatching {
+                    proc.errorStream.bufferedReader().use { reader ->
+                        val chunk = CharArray(4096)
+                        while (true) {
+                            val n = reader.read(chunk)
+                            if (n < 0) break
+                            synchronized(errBuf) {
+                                if (errBuf.length < 16 * 1024) errBuf.append(chunk, 0, n)
+                            }
+                        }
+                    }
+                }
+            }, "rootshell-read-stderr").apply { isDaemon = true; start() }
             process.inputStream.use { input ->
                 val buf = ByteArray(65536)
                 var total = 0L
-                var n: Int
-                while (input.read(buf).also { n = it } > 0) {
+                while (true) {
+                    val n = try {
+                        input.read(buf)
+                    } catch (t: java.io.IOException) {
+                        timedOut = true
+                        break
+                    }
+                    if (n < 0) break
                     if (limit > 0 && total + n > limit) {
                         out.write(buf, 0, (limit - total).toInt())
                         break
@@ -196,14 +235,19 @@ object RootShell {
                     total += n
                 }
             }
-            val finished = process.waitFor(defaultTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-            if (!finished) {
-                process.destroyForcibly()
+            timer.cancel()
+            errThread.join(1000)
+            if (timedOut) {
+                Log.w(TAG, "readBytes($path) timed out after ${timeout}ms")
                 return null
             }
-            if (process.exitValue() != 0) {
-                val err = process.errorStream.bufferedReader().use { it.readText() }
-                Log.w(TAG, "readBytes($path) exit=${process.exitValue()} err=$err")
+            val finished = proc.waitFor(2_000L, java.util.concurrent.TimeUnit.MILLISECONDS)
+            if (!finished) {
+                proc.destroyForcibly()
+                return null
+            }
+            if (proc.exitValue() != 0) {
+                Log.w(TAG, "readBytes($path) exit=${proc.exitValue()} err=${errBuf.toString().take(400)}")
                 return null
             }
             out.toByteArray()
@@ -214,19 +258,82 @@ object RootShell {
             }
             Log.w(TAG, "readBytes($path) failed: ${t.message}")
             null
+        } finally {
+            runCatching { watchdog?.cancel() }
         }
     }
 
     /**
      * 【魔改】以 root 身份打开任意路径的输入流（`su -c cat`），调用方需
      * 负责 close（会顺带回收进程）。用于大文件流式解析，不把整包读进堆。
+     *
+     * 【修复】旧实现不消费 stderr、不检查子进程退出码，导致 `cat <目录>`
+     * 或 `cat <不存在文件>` 也返回一个「非 null 但立即 EOF」的流，上层
+     * 无法区分「空文件」和「读取失败」，apk_analyze 因此对任意文件都
+     * 返回 ok:true。现在：
+     *  - stderr 由守护线程抽干（避免 64KB pipe 写满导致双向死锁）
+     *  - 流读到 EOF 时检查退出码，非 0 则抛 IOException，让上层得到明确失败
+     *  - 支持 [expectedSize]，用于提前发现截断（cat 中断时字节数会偏小）
      */
-    fun openStream(path: String): java.io.InputStream? {
+    fun openStream(path: String, expectedSize: Long = -1L): java.io.InputStream? {
         val su = suPath() ?: return null
         return try {
             val process = ProcessBuilder(su, "-c", "cat ${shellQuote(path)}").start()
+            val errBuf = StringBuilder()
+            Thread({
+                runCatching {
+                    process.errorStream.bufferedReader().use { reader ->
+                        val chunk = CharArray(4096)
+                        while (true) {
+                            val n = reader.read(chunk)
+                            if (n < 0) break
+                            synchronized(errBuf) {
+                                if (errBuf.length < 8 * 1024) errBuf.append(chunk, 0, n)
+                            }
+                        }
+                    }
+                }
+            }, "rootshell-stream-stderr").apply { isDaemon = true; start() }
+
             val raw = process.inputStream
             object : java.io.FilterInputStream(raw) {
+                private var consumed = 0L
+                private var eofVerified = false
+
+                override fun read(): Int {
+                    val b = super.read()
+                    if (b >= 0) consumed++ else verifyEof()
+                    return b
+                }
+
+                override fun read(b: ByteArray, off: Int, len: Int): Int {
+                    val n = super.read(b, off, len)
+                    if (n > 0) consumed += n else if (n < 0) verifyEof()
+                    return n
+                }
+
+                /** 读到 EOF 时确认 cat 是正常退出，否则把失败暴露给调用方。 */
+                private fun verifyEof() {
+                    if (eofVerified) return
+                    eofVerified = true
+                    val finished = runCatching {
+                        process.waitFor(2_000L, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    }.getOrDefault(false)
+                    if (!finished) return
+                    val code = runCatching { process.exitValue() }.getOrDefault(-1)
+                    if (code != 0) {
+                        val msg = synchronized(errBuf) { errBuf.toString().trim() }
+                        throw java.io.IOException(
+                            "root cat failed for $path (exit=$code)${if (msg.isBlank()) "" else ": ${msg.take(400)}"}"
+                        )
+                    }
+                    if (expectedSize >= 0 && consumed != expectedSize) {
+                        throw java.io.IOException(
+                            "root cat truncated for $path: read $consumed of $expectedSize bytes"
+                        )
+                    }
+                }
+
                 override fun close() {
                     try { super.close() } finally {
                         runCatching { process.destroyForcibly() }

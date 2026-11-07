@@ -20,6 +20,7 @@ package com.soreverse.mcp.engine
 import android.content.Context
 import com.soreverse.mcp.core.InsufficientMemoryException
 import com.soreverse.mcp.core.MemoryGuard
+import com.soreverse.mcp.core.RootShell
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.ok
 import com.soreverse.mcp.core.str
@@ -76,12 +77,24 @@ internal class BlutterCoordinator(
         }
         val file = File(path)
         val abi = args.str("abi", "auto")
+        // 【修复】root-only 路径（/data/data 私有、权限 000/600）stat 能成功
+        // 但 open() 会 EACCES，此时 `isFile` 仍为 true，旧条件 `!isFile` 判不到。
+        // 现在：存在但不可读（或压根不是普通文件）时，先流式落到 App 私有缓存。
+        val needsStage = !file.isDirectory && (!file.isFile || !file.canRead())
+        val staged: File? = if (needsStage && RootShell.isAvailable()) {
+            stageFlutterInput(path, File(context.cacheDir, "flutter-inspect").apply { mkdirs() })
+        } else {
+            null
+        }
+        val effective = staged ?: file
         return try {
             when {
-                file.isDirectory -> inspectDirectory(file, path, abi)
+                effective.isDirectory -> inspectDirectory(effective, path, abi)
 
-                file.isFile -> {
-                    if (!file.extension.equals("apk", true)) {
+                effective.isFile -> {
+                    if (!effective.extension.equals("apk", true) &&
+                        !effective.extension.equals("zip", true)
+                    ) {
                         err(
                             "UNSUPPORTED_INPUT",
                             "inspect currently accepts an APK or a libapp/libflutter directory",
@@ -89,7 +102,7 @@ internal class BlutterCoordinator(
                             path
                         )
                     } else {
-                        ok(inspectApkFile(file, abi))
+                        ok(inspectApkFile(effective, abi))
                     }
                 }
 
@@ -101,7 +114,11 @@ internal class BlutterCoordinator(
 
                 else -> err(
                     "INPUT_NOT_FOUND",
-                    "Input path does not exist and no work directory is selected",
+                    if (RootShell.isAvailable()) {
+                        "Input path does not exist or is not readable through the root channel: $path"
+                    } else {
+                        "Input path does not exist and no work directory is selected"
+                    },
                     "path",
                     path
                 )
@@ -124,6 +141,9 @@ internal class BlutterCoordinator(
                 "path",
                 path
             )
+        } finally {
+            // 临时副本用完即删
+            staged?.let { runCatching { it.delete() } }
         }
     }
 
@@ -347,34 +367,65 @@ internal class BlutterCoordinator(
         val abi = args.str("abi", "arm64-v8a")
         val jobInput = store.jobInput(jobId)
         val file = File(path)
-        val files = when {
-            file.isDirectory -> libraryFilesFromDirectory(file, path, abi, jobInput)
-
-            file.isFile -> {
-                val inventory = FlutterArtifactInspector.inspectApk(file, abi)
-                if (inventory.optJSONObject("selected") == null) {
-                    throw IllegalArgumentException(
-                        "FLUTTER_LIBS_NOT_FOUND: APK does not contain a complete libapp.so/libflutter.so pair"
-                    )
-                }
-                FlutterArtifactInspector.extractLibrariesTo(file, jobInput, abi)
-            }
-
-            else -> {
-                val dir = workDirectory ?: throw IllegalArgumentException("INPUT_NOT_FOUND: $path")
-                MemoryGuard.ensureAnalysisMemory(
-                    dir.fileSize(path) ?: ApkAnalyzer.MAX_INPUT_BYTES,
-                    "Analyzing Flutter APK $path"
-                )
-                val bytes = dir.readFile(path, ApkAnalyzer.MAX_INPUT_BYTES)
-                val libraries = FlutterArtifactInspector.extractLibraries(bytes, path, abi)
-                jobInput.mkdirs()
-                val app = File(jobInput, "libapp.so").apply { writeBytes(libraries.libapp) }
-                val flutter = File(jobInput, "libflutter.so").apply { writeBytes(libraries.libflutter) }
-                FlutterArtifactInspector.libraryFiles(app, flutter, libraries.displayName, libraries.abi)
-            }
+        // 【修复】旧实现只认 `File.isDirectory` / `File.isFile`，root-only 路径
+        // （/data/data 私有、权限 000/600）stat 成功但 open() 会 EACCES，
+        // 于是掉进 else 分支强制要求 SAF 工作目录 —— 而魔改版已经把选目录的
+        // UI 删了，flutter_blutter 对这类路径永久不可用。
+        // 现在：存在但不可读时先流式落到 App 私有缓存，再走本地随机访问路径。
+        val needsStage = !file.isDirectory && (!file.isFile || !file.canRead())
+        val staged: File? = if (needsStage && RootShell.isAvailable()) {
+            stageFlutterInput(path, jobInput)
+        } else {
+            null
         }
-        return PreparedInput(files, FlutterArtifactInspector.inspectLibraries(files))
+        val effective = staged ?: file
+        return try {
+            val files = when {
+                effective.isDirectory -> libraryFilesFromDirectory(effective, path, abi, jobInput)
+
+                effective.isFile -> {
+                    val inventory = FlutterArtifactInspector.inspectApk(effective, abi)
+                    if (inventory.optJSONObject("selected") == null) {
+                        throw IllegalArgumentException(
+                            "FLUTTER_LIBS_NOT_FOUND: APK does not contain a complete libapp.so/libflutter.so pair"
+                        )
+                    }
+                    FlutterArtifactInspector.extractLibrariesTo(effective, jobInput, abi)
+                }
+
+                else -> {
+                    val dir = workDirectory ?: throw IllegalArgumentException("INPUT_NOT_FOUND: $path")
+                    MemoryGuard.ensureAnalysisMemory(
+                        dir.fileSize(path) ?: ApkAnalyzer.MAX_INPUT_BYTES,
+                        "Analyzing Flutter APK $path"
+                    )
+                    val bytes = dir.readFile(path, ApkAnalyzer.MAX_INPUT_BYTES)
+                    val libraries = FlutterArtifactInspector.extractLibraries(bytes, path, abi)
+                    jobInput.mkdirs()
+                    val app = File(jobInput, "libapp.so").apply { writeBytes(libraries.libapp) }
+                    val flutter = File(jobInput, "libflutter.so").apply { writeBytes(libraries.libflutter) }
+                    FlutterArtifactInspector.libraryFiles(app, flutter, libraries.displayName, libraries.abi)
+                }
+            }
+            PreparedInput(files, FlutterArtifactInspector.inspectLibraries(files))
+        } finally {
+            // 临时副本用完即删，jobInput 里已经有需要的 libapp/libflutter
+            staged?.let { runCatching { it.delete() } }
+        }
+    }
+
+    /** 把 root-only 的 APK 流式落到 jobInput 目录下的临时文件。 */
+    private fun stageFlutterInput(path: String, jobInput: File): File? {
+        val size = RootShell.fileSize(path) ?: -1L
+        val stream = RootShell.openStream(path, size) ?: return null
+        return try {
+            jobInput.mkdirs()
+            val out = File(jobInput, "staged-${System.currentTimeMillis()}-${path.substringAfterLast('/').take(48)}")
+            stream.use { input -> out.outputStream().buffered().use { sink -> input.copyTo(sink, 64 * 1024) } }
+            out
+        } catch (t: Throwable) {
+            null
+        }
     }
 
     private fun libraryFilesFromDirectory(dir: File, path: String, abi: String, jobInput: File): FlutterLibraryFiles {

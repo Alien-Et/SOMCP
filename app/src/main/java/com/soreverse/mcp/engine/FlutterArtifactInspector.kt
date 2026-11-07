@@ -58,6 +58,42 @@ internal object FlutterArtifactInspector {
         return inspect(ByteArraySource(bytes), path, requestedAbi)
     }
 
+    /**
+     * 【修复】给流式 root 解析路径用：调用方已经有一份条目清单（来自
+     * ZipInputStream，拿不到 ZipFile 的随机访问），这里直接基于清单做
+     * Flutter 判定，避免为了一个 `detected` 布尔值再开一次 root 流。
+     */
+    fun inspectFlutterFromEntries(entries: JSONArray, path: String): JSONObject {
+        val candidates = linkedMapOf<String, MutableMap<String, Any>>()
+        val assets = JSONArray()
+        for (i in 0 until entries.length()) {
+            val obj = entries.optJSONObject(i) ?: continue
+            val name = obj.optString("name")
+            if (name.isBlank()) continue
+            if (name.startsWith("assets/flutter_assets/")) assets.put(name)
+            if (obj.optBoolean("directory", false)) continue
+            if (!LIBRARY_ENTRY.matches(name)) continue
+            val abi = name.split('/')[1]
+            val item = candidates.getOrPut(abi) { linkedMapOf() }
+            val isApp = name.endsWith("libapp.so")
+            val size = obj.optLong("size", -1L)
+            item[if (isApp) "libappEntry" else "libflutterEntry"] = name
+            item[if (isApp) "libappSize" else "libflutterSize"] = size
+        }
+        val selected = selectAbi(candidates, "auto")
+        return JSONObject()
+            .put("detected", selected != null)
+            .put("mode", if (selected != null) "aot" else "unknown")
+            .put("requestedAbi", "auto")
+            .put("supportedAbis", JSONArray(candidates.keys))
+            .put("assets", assets)
+            .put("candidates", candidatesJson(candidates))
+            .put(
+                "source",
+                "entry-list (streaming root path; assets list is limited to the returned entry window)"
+            )
+    }
+
     // ---------------------------------------------------------------- extraction
 
     /** Extracts the selected ABI pair into [target], streaming and hashing. */

@@ -293,28 +293,55 @@ internal fun EngineRuntime.open(path: String, temporary: Boolean): JSONObject = 
 internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSONObject = guarded {
     if (path.isBlank()) return@guarded err("INVALID_ARGUMENT", "APK path is required", "path", path)
     val local = File(path)
-    // 【魔改】完全废除「本地文件 vs 工作目录」分裂逻辑：有 root 就任意
-    // 路径直读。分区存储下 Java File 连 exists() 都看不到 /sdcard/自建目录，
-    // 且 exists() 的 shell 探路对中文路径可能编码失败 —— 所以直接尝试
-    // 打开 root 的 cat 流：能开就流式解析，打不开才回退。不落盘副本。
-    if (RootShell.isAvailable()) {
-        val probe = RootShell.openStream(path)
-        if (probe != null) {
-            return@guarded try {
-                probe.close()
-                ok(ApkAnalyzer.analyzeRootStream(path, entryLimit))
-            } catch (t: Throwable) {
-                err(
-                    "APK_STREAM_FAILED",
-                    "Root-stream APK analysis failed: ${t.javaClass.simpleName}: ${t.message}",
-                    "path", path
-                )
+    // 【修复】旧实现只要 root 可用就先 openStream 探一次、关掉、再让
+    // analyzeRootStream 自己 openStream 第二次 —— 每个大 APK 要起两次
+    // su + cat，且第一次读进 pipe 的数据被直接丢弃。现在改成：
+    //   1) 能被 App 直接读取的普通文件走 analyzeFile（随机访问、解析完整）
+    //   2) 否则才走 root 流（且只开一次）
+    val directReadable = local.isFile && local.canRead()
+    if (directReadable) {
+        if (local.length() > ApkAnalyzer.MAX_INPUT_BYTES) {
+            return@guarded err(
+                "APK_LIMIT_EXCEEDED",
+                "APK exceeds ${ApkAnalyzer.MAX_INPUT_BYTES / 1024 / 1024} MiB input limit",
+                "path",
+                path
+            )
+        }
+        return@guarded try {
+            if (!com.soreverse.mcp.core.SelfArtifactGuard.ALLOW_SELF_ANALYSIS &&
+                NativeProbe.isOwnApk(local.absolutePath)
+            ) {
+                selfForbidden("apk:$path")
+            } else {
+                ok(ApkAnalyzer.analyzeFile(local, path, entryLimit))
             }
+        } catch (error: ApkNotZipException) {
+            err("APK_INVALID", error.message ?: "Input is not a ZIP/APK file", "path", path)
+        } catch (error: ApkAnalysisLimitException) {
+            err("APK_LIMIT_EXCEEDED", error.message ?: "APK exceeds analysis limits", "path", path)
         }
     }
-    if (local.isFile &&
-        local.length() > ApkAnalyzer.MAX_INPUT_BYTES
-    ) {
+    // 到这里说明 App 读不到（分区存储、/data/data 私有、权限 600 等），
+    // 有 root 就走流式，否则才落到工作目录兜底。
+    if (RootShell.isAvailable()) {
+        return@guarded try {
+            ok(ApkAnalyzer.analyzeRootStream(path, entryLimit))
+        } catch (error: ApkNotZipException) {
+            err("APK_INVALID", error.message ?: "Input is not a ZIP/APK file", "path", path)
+        } catch (error: ApkAnalysisLimitException) {
+            err("APK_LIMIT_EXCEEDED", error.message ?: "APK exceeds analysis limits", "path", path)
+        } catch (error: java.io.IOException) {
+            err(
+                "APK_READ_FAILED",
+                error.message ?: "Unable to read APK through the root channel",
+                "path",
+                path
+            )
+        }
+    }
+    // 既不可直读、也没有 root：最后才用工作目录（SAF）。
+    if (local.isFile && local.length() > ApkAnalyzer.MAX_INPUT_BYTES) {
         return@guarded err(
             "APK_LIMIT_EXCEEDED",
             "APK exceeds ${ApkAnalyzer.MAX_INPUT_BYTES / 1024 / 1024} MiB input limit",
@@ -335,7 +362,7 @@ internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSON
                 workDir
                     ?: return@guarded err(
                         "WORK_DIRECTORY_NOT_SELECTED",
-                        "APK path is not a local file and no work directory is selected",
+                        "APK path is not readable and no work directory is selected",
                         "path",
                         path
                     )
@@ -352,10 +379,16 @@ internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSON
             "path",
             path
         )
+    } catch (error: java.io.IOException) {
+        return@guarded err(
+            "APK_READ_FAILED",
+            error.message ?: "Unable to read APK: $path",
+            "path",
+            path
+        )
     }
     if (bytes.size < 4 ||
-        bytes[0] != 0x50.toByte() ||
-        bytes[1] != 0x4b.toByte()
+        bytes[0] != 0x50.toByte() || bytes[1] != 0x4b.toByte()
     ) {
         return@guarded err("APK_INVALID", "Input is not a ZIP/APK file", "path", path)
     }
@@ -367,18 +400,18 @@ internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSON
     }
     try {
         ok(ApkAnalyzer.analyze(bytes, path, entryLimit))
+    } catch (error: ApkNotZipException) {
+        err("APK_INVALID", error.message ?: "Input is not a ZIP/APK file", "path", path)
     } catch (error: ApkAnalysisLimitException) {
         err("APK_LIMIT_EXCEEDED", error.message ?: "APK exceeds analysis limits", "path", path)
     }
 }
 
 internal fun EngineRuntime.openUrl(url: String, outputName: String = "", temporary: Boolean = false): JSONObject = guarded {
-    val dir =
-        workDir
-            ?: return@guarded err(
-                "WORK_DIRECTORY_NOT_SELECTED",
-                "A work directory must be selected before downloading a SO URL"
-            )
+    // 【修复】旧实现强制要求 SAF 工作目录，而魔改版已经把选目录的 UI 删掉了，
+    // 于是 open_url 永久不可用。现在改为：有工作目录就写工作目录，
+    // 没有就落到 App 自己的外部私有目录（不需要任何存储权限）。
+    val dir = workDir
     val parsed =
         runCatching { URL(url.trim()) }.getOrNull()
             ?: return@guarded err("INVALID_ARGUMENT", "url must be a valid http(s) URL", "url", url)
@@ -485,10 +518,32 @@ internal fun EngineRuntime.openUrl(url: String, outputName: String = "", tempora
     val safeName = rawName.substringAfterLast('/').substringAfterLast('\\').let {
         if (it.endsWith(".so", ignoreCase = true)) it else "$it.so"
     }
-    val source = dir.writeRootFile(safeName, bytes)
-    sources = (sources.filterNot { it.path == source.path } + source).sortedBy { it.path }
-    sourceFingerprint = emptyList()
-    sourceSummaryCache.clear()
+    val source = if (dir != null) {
+        dir.writeRootFile(safeName, bytes).also {
+            sources = (sources.filterNot { s -> s.path == it.path } + it).sortedBy { s -> s.path }
+            sourceFingerprint = emptyList()
+            sourceSummaryCache.clear()
+        }
+    } else {
+        // 【修复】没有 SAF 工作目录时的落点：App 外部私有目录
+        // (/storage/emulated/0/Android/data/com.soreverse.mcp/files)。
+        // 这个目录不需要任何存储权限，也不会污染用户的相册/文件管理器。
+        val outDir = java.io.File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads")
+        outDir.mkdirs()
+        val out = java.io.File(outDir, safeName)
+        out.writeBytes(bytes)
+        SoSource(
+            path = out.absolutePath,
+            source = "build_output",
+            name = out.name,
+            size = bytes.size.toLong(),
+            modified = out.lastModified(),
+            treeDocumentUri = null,
+            apkPath = null,
+            apkEntry = null,
+            abi = null
+        )
+    }
     open(
         source.path,
         temporary
@@ -647,7 +702,11 @@ internal fun EngineRuntime.openWorkspace(path: String, temporary: Boolean): Work
                 "SO path not found: $path. This looks like an APK-embedded SO; call so_open (action=list) first and open it with the returned path (apk:<relpath>!lib/<abi>/x.so)."
             )
         }
-        error("SO path not found: $path (root available=${RootShell.isAvailable()})")
+        // 【修复】旧实现把诊断信息拼进了异常消息，而 guarded 会把
+        // `substringAfter(": ")` 当成 badValue 返回，导致客户端拿到
+        // "/data/local/tmp (root available=true)" 这种非法路径。
+        // 现在只报原始路径，root 状态放到单独的 diagnostics 里。
+        error("SO path not found: $path")
     }
     // Own-artifact protection: never open/view/modify SOMCP's own APK or the
     // native libraries it bundles, whether reached directly (local_file /
@@ -681,7 +740,7 @@ internal fun EngineRuntime.openWorkspace(path: String, temporary: Boolean): Work
         }.getOrElse {
             // 【魔改】直读被拒（EACCES 等）→ root 通道兜底，任意路径都能读
             RootShell.readBytes(src.path)
-                ?: error("SO path not found: $path (direct read failed: ${it.message}; root unavailable or failed)")
+                ?: error("SO path not found: $path (direct read failed: ${it.message})")
         }
 
         // 【魔改】root 通道直读任意路径（/data/data、/data/local/tmp 等）
