@@ -293,15 +293,30 @@ object RootShell {
         maxDepth: Int = 8,
         onFile: (DirEntry) -> Unit
     ) {
-        if (maxDepth <= 0) return
-        for (e in listFiles(dirPath)) {
-            if (e.isDirectory) {
-                walkFiles(e.path, suffixes, maxDepth - 1, onFile)
-            } else {
-                if (suffixes.isEmpty() || suffixes.any { e.name.endsWith(it, ignoreCase = true) }) {
-                    onFile(e)
-                }
-            }
+        if (maxDepth <= 0 || !isAvailable()) return
+        // 【魔改】旧实现递归逐层 listFiles（每层一次 `su -c find|stat`），
+        // 扫 /data/app、/storage/emulated/0 这类大目录会起几百个 su 进程，
+        // 慢到 MCP 请求直接超时。改成一条 `find -maxdepth N` 拿全部路径，
+        // 再一次性 stat 补元信息（最多 2 次 su）。
+        val nameFilter = suffixes.joinToString(" -o ") { "-iname '*${it}'" }
+            .let { if (suffixes.isEmpty()) "" else " \\( $it \\)" }
+        val r = exec(
+            "find ${shellQuote(dirPath)} -maxdepth $maxDepth -type f $nameFilter -print0 2>/dev/null | " +
+                "xargs -0 -r stat -c '%F|%s|%Y|%n' 2>/dev/null"
+        )
+        if (!r.ok) return
+        for (raw in r.stdout.lineSequence()) {
+            val line = raw.trimEnd()
+            if (line.isBlank()) continue
+            val fields = line.split('|', limit = 4)
+            if (fields.size < 4) continue
+            val path = fields[3]
+            val name = path.substringAfterLast('/')
+            if (name.isBlank()) continue
+            val isDir = fields[0].equals("directory", ignoreCase = true)
+            val size = fields[1].toLongOrNull() ?: 0L
+            val mtimeSec = fields[2].toLongOrNull() ?: 0L
+            onFile(DirEntry(name, path, isDir, size, mtimeSec * 1000L))
         }
     }
 

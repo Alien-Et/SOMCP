@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.KeyboardArrowRight
@@ -55,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -64,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.soreverse.mcp.core.AppLog
 import com.soreverse.mcp.core.EngineProvider
+import com.soreverse.mcp.core.RootShell
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.service.McpForegroundService
 import kotlinx.coroutines.Dispatchers
@@ -86,6 +89,9 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () 
     var apkToolNames by remember { mutableStateOf<List<String>>(emptyList()) }
     var showToolCatalog by remember { mutableStateOf(false) }
     var keepAliveReady by remember { mutableStateOf(isKeepAliveReady(context, settings)) }
+    // 【魔改】root 授权状态：KernelSU/Magisk 按 App uid 授权，没开时
+    // root 扫描、受限目录读取都会静默失败。首页明确提醒用户去授权。
+    var rootGranted by remember { mutableStateOf(RootShell.isAvailable()) }
     LaunchedEffect(Unit) {
         // 【魔改】APK MCP 桥接已移除
         apkConnected = false
@@ -100,6 +106,10 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () 
             apkToolNames = emptyList()
             apkConnected = false
             keepAliveReady = isKeepAliveReady(context, settings)
+            // 用户在 KernelSU 里授权 / 撤销后无需重启 App：每次轮询清缓存重测，
+            // 卡片状态始终跟随真实 su 可用性（一次 `su -c id` 很轻）。
+            RootShell.invalidate()
+            rootGranted = RootShell.isAvailable()
             delay(1_000)
         }
     }
@@ -210,6 +220,17 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () 
                 running = running,
                 port = settings.port,
                 onPower = toggleServer
+            )
+
+            // 【魔改】root 状态卡常驻首页：已授权显示绿色状态，未授权显示橙色
+            // 引导去 KernelSU/Magisk 授权。让用户随时能看到 root 是否可用。
+            RootGrantCard(
+                t = t,
+                granted = rootGranted,
+                onRecheck = {
+                    RootShell.invalidate()
+                    rootGranted = RootShell.isAvailable()
+                }
             )
 
             SectionTitle(if (t.zh) "保活状态" else "Keep-alive")
@@ -405,6 +426,90 @@ private fun StatusCard(t: UiText, running: Boolean, port: Int, onPower: () -> Un
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 【魔改】Root 状态卡（常驻首页）。
+ * KernelSU/Magisk 按 App uid 授权：已授权 → 绿色「Root 已授权」；未授权 → 橙色
+ * 「未获得 Root 权限」+ 去 KernelSU 授权的明确指引。两种情况都给「重新检测」
+ * 按钮，用户在管理器里改完授权不用重启 App 即可刷新状态。
+ */
+@Composable
+private fun RootGrantCard(
+    t: UiText,
+    granted: Boolean,
+    onRecheck: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val accent = if (granted) statusSuccess() else AppleColors.systemOrange
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(accent.copy(alpha = 0.10f))
+            .border(1.dp, accent.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(
+                Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(accent.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Info, contentDescription = null, tint = accent, modifier = Modifier.size(20.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (granted) {
+                        if (t.zh) "Root 已授权" else "Root access granted"
+                    } else {
+                        if (t.zh) "未获得 Root 权限" else "Root access not granted"
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                    color = accent,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    if (granted) {
+                        if (t.zh) "受限目录扫描与读取可用" else "Restricted-path scan & read enabled"
+                    } else {
+                        if (t.zh) "受限目录扫描与读取将不可用" else "Restricted-path scan & read disabled"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Text(
+            if (granted) {
+                if (t.zh) {
+                    "本 App 已获得 su 权限，可扫描 /data/app 等受限目录并直读任意路径。"
+                } else {
+                    "su is available: restricted directories and arbitrary paths can be scanned and read."
+                }
+            } else {
+                if (t.zh) {
+                    "请在 KernelSU / Magisk 管理器的「超级用户」里，给 SOMCP 开启 Root 权限，然后回到这里点「重新检测」。直连路径（如 /sdcard 下的文件）仍可正常使用。"
+                } else {
+                    "Open your KernelSU / Magisk manager → Superuser → enable root for SOMCP, then tap Recheck here. Plain readable paths still work."
+                }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onRecheck) {
+                Text(
+                    if (t.zh) "重新检测" else "Recheck",
+                    color = accent,
+                    style = MaterialTheme.typography.labelLarge
                 )
             }
         }
