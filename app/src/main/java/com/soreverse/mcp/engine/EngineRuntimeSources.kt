@@ -293,6 +293,25 @@ internal fun EngineRuntime.open(path: String, temporary: Boolean): JSONObject = 
 internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSONObject = guarded {
     if (path.isBlank()) return@guarded err("INVALID_ARGUMENT", "APK path is required", "path", path)
     val local = File(path)
+    // 【魔改】完全废除「本地文件 vs 工作目录」分裂逻辑：有 root 就任意
+    // 路径直读。分区存储下 Java File 连 exists() 都看不到 /sdcard/自建目录，
+    // 且 exists() 的 shell 探路对中文路径可能编码失败 —— 所以直接尝试
+    // 打开 root 的 cat 流：能开就流式解析，打不开才回退。不落盘副本。
+    if (RootShell.isAvailable()) {
+        val probe = RootShell.openStream(path)
+        if (probe != null) {
+            return@guarded try {
+                probe.close()
+                ok(ApkAnalyzer.analyzeRootStream(path, entryLimit))
+            } catch (t: Throwable) {
+                err(
+                    "APK_STREAM_FAILED",
+                    "Root-stream APK analysis failed: ${t.javaClass.simpleName}: ${t.message}",
+                    "path", path
+                )
+            }
+        }
+    }
     if (local.isFile &&
         local.length() > ApkAnalyzer.MAX_INPUT_BYTES
     ) {
@@ -303,36 +322,13 @@ internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSON
             path
         )
     }
-    // 【魔改】大 APK 走流式解析（不整包读进堆）。若 App 对该路径没有
-    // 读取权限（Android 分区存储，如 /sdcard/逆向/ 这类自建目录 EACCES），
-    // 用 root 把文件复制到 App 私有 cacheDir 再分析副本。
-    if (local.isFile && local.length() > 64L * 1024L * 1024L) {
-        val target = try {
-            if (local.canRead()) local
-            else copyViaRootToCache(path, local.name)
-        } catch (t: Throwable) {
-            return@guarded err(
-                "APK_ACCESS_FAILED",
-                "Cannot read APK (${t.javaClass.simpleName}: ${t.message}); grant storage access or root",
-                "path", path
-            )
-        }
-        return@guarded try {
-            ok(ApkAnalyzer.analyzeFile(target, path, entryLimit))
-        } catch (t: Throwable) {
-            err(
-                "APK_STREAM_FAILED",
-                "Streaming APK analysis failed: ${t.javaClass.simpleName}: ${t.message}",
-                "path", path
-            )
-        }
-    }
     val bytes = try {
         if (local.isFile) {
-            // 【魔改】路径白名单已废除：普通文件直读，root 通道兜底
-            val read = local.readBytes().takeIf { it.isNotEmpty() }
+            // 【魔改】路径白名单已废除：普通文件直读，异常/空都走 root 兜底
+            val direct = runCatching { local.readBytes() }.getOrNull()
+            val read = direct?.takeIf { it.isNotEmpty() }
                 ?: RootShell.readBytes(path)
-            if (read == null) throw java.io.IOException("Unable to read APK: $path")
+            if (read == null) throw java.io.IOException("Unable to read APK: $path (root unavailable or unreadable)")
             read
         } else {
             val workDirForApk =
@@ -682,7 +678,11 @@ internal fun EngineRuntime.openWorkspace(path: String, temporary: Boolean): Work
         // 【魔改】普通文件直读：不再需要工作目录
         "build_output", "local_file", "local_fs" -> runCatching {
             File(src.path).readBytes()
-        }.getOrElse { error("SO path not found: $path") }
+        }.getOrElse {
+            // 【魔改】直读被拒（EACCES 等）→ root 通道兜底，任意路径都能读
+            RootShell.readBytes(src.path)
+                ?: error("SO path not found: $path (direct read failed: ${it.message}; root unavailable or failed)")
+        }
 
         // 【魔改】root 通道直读任意路径（/data/data、/data/local/tmp 等）
         "root_fs" -> RootShell.readBytes(src.path)
@@ -837,13 +837,8 @@ internal fun EngineRuntime.resolveLocalSoSource(rawPath: String): SoSource? {
     if (rawPath.isBlank()) return null
     val file = File(rawPath)
 
-    // 【魔改】1) 普通文件直读：不再限制工作目录
-    if (file.exists() && file.isFile) {
-        val canonical = runCatching { file.canonicalPath }.getOrDefault(rawPath)
-        return SoSource(canonical, "local_fs", file.name, file.length(), file.lastModified(), null)
-    }
-
-    // 【魔改】2) root 通道：任意路径（含 /data/data、/data/local/tmp）
+    // 【魔改】1) root 优先：有 root 就任意路径直读，不依赖 Java File 可见性
+    // （分区存储下 Java File 对 /sdcard/自建目录连 exists() 都看不到）
     if (RootShell.isAvailable()) {
         val trimmed = rawPath.trim()
         if (trimmed.startsWith("/") || trimmed.startsWith("~")) {
@@ -856,6 +851,13 @@ internal fun EngineRuntime.resolveLocalSoSource(rawPath: String): SoSource? {
                 }
             }
         }
+    }
+
+    // 【魔改】2) 无 root（或 root 未命中）时：普通可直读文件仍可打开
+    if (file.exists() && file.isFile) {
+        val canonical = runCatching { file.canonicalPath }.getOrDefault(rawPath)
+        val kind = if (file.canRead()) "local_fs" else "root_fs"
+        return SoSource(canonical, kind, file.name, file.length(), file.lastModified(), null)
     }
 
     // 【魔改】3) 原逻辑保留作为兜底：app 私有目录下的 .so
@@ -1093,24 +1095,3 @@ internal fun EngineRuntime.sourceSummary(dir: WorkDirectory, src: SoSource): Sou
 
 internal fun EngineRuntime.sourceKey(src: SoSource): String = "${src.path}|${src.size}|${src.modified}"
 
-/**
- * 【魔改】App 对某些外部路径（如 /sdcard/逆向/）因分区存储没有读权限时，
- * 用 root 把文件复制到 App 私有 cacheDir，返回可直读的副本。
- * 大文件不进堆：调用方用 ApkAnalyzer.analyzeFile 流式解析。
- */
-private fun EngineRuntime.copyViaRootToCache(srcPath: String, name: String): java.io.File {
-    if (!RootShell.isAvailable()) {
-        throw java.io.IOException("root not available; cannot read restricted path")
-    }
-    val dest = java.io.File(context.cacheDir, "apk_copy_${System.currentTimeMillis()}_${name}")
-    val r = RootShell.exec(
-        "cp ${RootShell.shellQuote(srcPath)} ${RootShell.shellQuote(dest.absolutePath)} && " +
-            "chmod 644 ${RootShell.shellQuote(dest.absolutePath)}",
-        timeoutMs = 120_000L
-    )
-    if (!r.ok || !dest.isFile || dest.length() == 0L) {
-        dest.delete()
-        throw java.io.IOException("root copy failed: ${r.stderr.ifBlank { r.stdout }}")
-    }
-    return dest
-}

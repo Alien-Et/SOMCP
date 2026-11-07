@@ -217,6 +217,28 @@ object RootShell {
         }
     }
 
+    /**
+     * 【魔改】以 root 身份打开任意路径的输入流（`su -c cat`），调用方需
+     * 负责 close（会顺带回收进程）。用于大文件流式解析，不把整包读进堆。
+     */
+    fun openStream(path: String): java.io.InputStream? {
+        val su = suPath() ?: return null
+        return try {
+            val process = ProcessBuilder(su, "-c", "cat ${shellQuote(path)}").start()
+            val raw = process.inputStream
+            object : java.io.FilterInputStream(raw) {
+                override fun close() {
+                    try { super.close() } finally {
+                        runCatching { process.destroyForcibly() }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "openStream($path) failed: ${t.message}")
+            null
+        }
+    }
+
     /** 以 root 身份拿文件大小，失败返回 null。*/
     fun fileSize(path: String): Long? {
         if (!isAvailable()) return null

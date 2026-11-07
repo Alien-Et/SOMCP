@@ -1,5 +1,6 @@
 package com.soreverse.mcp.engine
 
+import com.soreverse.mcp.core.RootShell
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
@@ -109,6 +110,81 @@ internal object ApkAnalyzer {
             .put("size", size)
             .put("sha256", sha)
             .put("parser", "builtin_apk_zip_streaming")
+            .put("externalApkMcpRequired", false)
+            .put("entryCount", totalEntries)
+            .put("entriesTruncated", totalEntries > entries.length())
+            .put("entries", entries)
+            .put("nativeLibs", nativeLibs)
+            .put("dexFiles", dexFiles)
+            .put("signatures", signatures)
+            .put("abis", JSONArray(abis.toList()))
+            .put("manifest", manifest)
+            .put("resourcesArsc", resourcesArsc)
+            .put("flutter", flutter)
+            .put("parsedBytes", parsedBytes)
+    }
+
+    /**
+     * 【魔改】任意受保护路径的 APK 分析：root 的 `cat` 管道 → ZipInputStream
+     * 流式解析，不进堆、不落盘副本。用于 App 直读 EACCES 时的兜底。
+     */
+    fun analyzeRootStream(path: String, entryLimit: Int, limits: Limits = Limits()): JSONObject {
+        val stream = RootShell.openStream(path)
+            ?: throw java.io.IOException("root stream unavailable for $path")
+        val digest = MessageDigest.getInstance("SHA-256")
+        val entries = JSONArray()
+        val nativeLibs = JSONArray()
+        val dexFiles = JSONArray()
+        val signatures = JSONArray()
+        val abis = linkedSetOf<String>()
+        var manifest = JSONObject().put("present", false)
+        var resourcesArsc = false
+        var totalEntries = 0
+        var parsedBytes = 0L
+        var size = 0L
+        stream.use { input ->
+            val digestInput = java.security.DigestInputStream(input, digest)
+            ZipInputStream(digestInput.buffered()).use { zip ->
+                while (true) {
+                    val entry = zip.nextEntry ?: break
+                    totalEntries++
+                    if (totalEntries > limits.maxEntries) {
+                        throw ApkAnalysisLimitException("APK contains more than ${limits.maxEntries} entries")
+                    }
+                    val name = entry.name
+                    if (entries.length() < entryLimit.coerceIn(1, 5000)) {
+                        entries.put(
+                            JSONObject()
+                                .put("name", name)
+                                .put("size", entry.size.takeIf { it >= 0 } ?: -1L)
+                                .put("compressedSize", entry.compressedSize)
+                                .put("directory", entry.isDirectory)
+                        )
+                    }
+                    if (!entry.isDirectory && name.matches(Regex("^lib/[^/]+/[^/]+\\.so$"))) {
+                        val abi = name.split('/')[1]
+                        abis.add(abi)
+                        nativeLibs.put(JSONObject().put("name", name).put("abi", abi))
+                    }
+                    if (!entry.isDirectory && name.endsWith(".dex", true)) dexFiles.put(name)
+                    if (!entry.isDirectory && name.startsWith("META-INF/") &&
+                        (name.endsWith(".RSA", true) || name.endsWith(".DSA", true) ||
+                            name.endsWith(".EC", true) || name.endsWith(".SF", true) ||
+                            name.endsWith("MANIFEST.MF", true))
+                    ) signatures.put(name)
+                    zip.closeEntry()
+                }
+            }
+            // 把 ZIP 尾部剩余字节也喂给摘要（DigestInputStream 已随流累计）
+        }
+        size = RootShell.fileSize(path) ?: 0L
+        val sha = digest.digest().joinToString("") { "%02x".format(it) }
+        val flutter = JSONObject()
+        return JSONObject()
+            .put("path", path)
+            .put("size", size)
+            .put("sha256", sha)
+            .put("parser", "builtin_apk_zip_root_stream")
             .put("externalApkMcpRequired", false)
             .put("entryCount", totalEntries)
             .put("entriesTruncated", totalEntries > entries.length())
