@@ -51,17 +51,17 @@ jobs:
       - name: Init submodules
         run: bash tools/init-submodules.sh
 
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.6.1"
-          cache-disabled: true
-
+      # No Java/Gradle: this workflow never builds an APK. It only runs the
+      # NDK cross-compile (build-blutter-runners.sh) and the exporter.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      # The runner build pins NDK 29.0.14206865 (see
+      # tools/blutter-matrix/matrix-config.json); setup-android does not install
+      # an NDK by default, and build-blutter-runners.sh hard-fails without it.
+      - name: Install Android NDK
+        run: sdkmanager "ndk;29.0.14206865"
 
       - name: Install native build tools
         run: |
