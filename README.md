@@ -1,121 +1,206 @@
 # SOMCP
 
-SOMCP 是一个运行在 Android 手机上的本地 SO 逆向 MCP 服务器。它通过 Streamable HTTP 暴露 MCP 工具，让客户端可以在手机上完成 ELF 结构分析、Rizin 反汇编/分析、LIEF ELF 修复/重写、补丁会话、构建导出、Cloudflare Tunnel 暴露和可选 APK MCP 桥接。
+> **原作者与致谢**
+>
+> 本项目源自 **[bilieebiliee1-design/SOMCP](https://github.com/bilieebiliee1-design/SOMCP)**，
+> 原项目作者为 **SOMCP authors**（Copyright (C) 2026 SOMCP authors），以 AGPL-3.0-only 发布。
+> 没有上游打下的 Rizin / LIEF / Unidbg / rz-ghidra 原生集成与 MCP 工具骨架，就没有这个分支。
+> 本仓库是 **Alien-Et 的魔改分支**，在原作基础上做了大量裁剪与重构，改动清单见「与上游的差异」。
+> 原项目的版权、许可与 NOTICE 声明完整保留，未做任何抹除。
 
-当前版本：`1.0.23`（`app/build.gradle.kts` 的 `versionName`，`versionCode` 24）。已发布的正式产物见 [GitHub Releases](https://github.com/bilieebiliee1-design/SOMCP/releases)，两者不必同名：源码树里的版本可以领先于最近一次发布。
+本分支维护者：[Alien-Et](https://github.com/Alien-Et)　·　仓库：<https://github.com/Alien-Et/SOMCP>
 
-包名：`com.soreverse.mcp`
+---
 
-最低系统：Android 8.0 / API 26
+## 这是什么
 
-许可证：`AGPL-3.0`。SOMCP 主项目依据 [GNU Affero General Public License v3.0](LICENSE) 发布。仓库中的第三方依赖、submodule、生成资源和补丁仍分别遵循各自上游许可证，AGPL-3.0 声明不会替代其原有许可条款。
+SOMCP 是一个**跑在 Android 手机上的本地 SO 逆向 MCP 服务器**。
 
-> **再分发义务（重要）**：本软件受《中华人民共和国著作权法》与《计算机软件保护条例》保护。任何再分发（含修改、改名、二次打包版本）必须：保留版权与许可声明及 [NOTICE](NOTICE)、继续以 AGPL-3.0 授权、向每一位接收者提供完整对应源代码、并标注所做修改。闭源分发、抹除署名或改名冒充原创即构成侵权——依 AGPL-3.0 第 8 条授权自动终止，权利人可要求停止侵害、下架、公开更正并索赔（GPL 在中国司法实践中已被确认有效可强制执行，参见"数字天堂诉柚子科技""罗盒诉风灵"等案）。维权模板见 [docs/legal](docs/legal)。本软件在 MCP `initialize`/健康检查返回与"关于"页固定输出许可证、上游仓库与版权，作为运行时溯源证据。
+它把手机变成一个可被任意 MCP 客户端（Claude Desktop、RikkaHub、Cherry Studio、自己写的脚本……）驱动的
+ELF/APK 分析节点：通过 Streamable HTTP 暴露 81 个 MCP 工具，覆盖 ELF 结构解析、Rizin 反汇编与分析、
+LIEF 重写与修复、补丁会话、构建导出、Flutter AOT 分析、JNI 动态注册还原、加固/混淆指纹识别等能力。
 
-## APK 位置
+不依赖 Python，不需要电脑，不需要把样本传到云端——所有分析都在手机本地进程内完成。
 
-Release 构建输出目录：
+| 项 | 值 |
+| --- | --- |
+| 包名 | `com.soreverse.mcp` |
+| 版本 | `1.0.23`（`versionCode` 24） |
+| 最低系统 | Android 8.0 / API 26 |
+| 目标 SDK | 36 |
+| 默认端口 | `8000` |
+| 许可证 | AGPL-3.0-only |
 
-```text
-app/build/outputs/apk/release/
+---
+
+## 核心特性
+
+### 纯 MCP 服务器
+
+本分支已移除原版的「分析」Tab、内置文件浏览器和前端分析面板，App 只做一件事：**把 MCP 服务跑稳**。
+所有分析动作都从 MCP 客户端发起，App 本身不参与交互。
+
+- 前台服务常驻，启动成功时 `START_STICKY`（启动失败回 `START_NOT_STICKY`，避免崩溃循环）。
+- Ktor CIO HTTP 服务，默认监听 `0.0.0.0:8000`。
+- **免 key**：`authEnabled` 出厂默认 `false`，局域网内客户端直接连，无需 Authorization。
+  需要收紧时可在「设置 → 访问」里打开 Token。
+- 外部拉起：`am start -n com.soreverse.mcp/.AutoStartActivity` 可在不点图标的情况下后台启动服务。
+
+### Root 任意路径直读
+
+这是本分支最重要的改动。原版依赖 SAF 让用户授权一个「工作目录」，只能在目录内工作；本分支改为
+**有 root 就直接读任意路径**，不复制、不落盘、不产生副本。
+
+原理：
+
+```
+MCP 调用 so_open(path="/data/app/~~xxx==/com.foo-yyy==/lib/arm64/libbar.so")
+        ↓
+RootShell.openStream(path)
+        ↓  ProcessBuilder("su", "-c", "cat '<path>'")
+        ↓  su 提权 → 以 root 身份 exec cat
+        ↓  cat 的 stdout 直接接到 App 进程的 InputStream
+        ↓
+ZipInputStream / ELF parser 边流边解析（APK 走流式，SO 走随机访问读取）
+        ↓
+结果留在内存，字节用完即丢
 ```
 
-普通 arm64 手机优先安装：
+- App 自身仍是普通 uid（如 `u0_a380`），打不开 `/data/app`、`/data/data/<other>`；
+  真正读文件的是 `cat` 子进程（euid=0）。
+- 全程管道，**没有任何临时文件**。
+- 386MB 的 APK 实测可解析（`analyzer: builtin_apk_zip_root_stream`，14473 个条目），
+  内存只占几百 KB 的 buffer。
+- 失败兜底链：root 流 → 普通 `File.readBytes()` → 报错并说明 `root available=...`。
+
+首页常驻 **Root 状态卡**：已授权显示绿色「Root 已授权」，未授权显示橙色「未获得 Root 权限」并给出
+KernelSU / Magisk 授权指引，两种状态都可点「重新检测」（无需重启 App）。
+
+### 无 root 也能用
+
+没有 root 不等于不能用。非 root 下仍然可用：
+
+| 能力 | 说明 |
+| --- | --- |
+| MCP 服务本体 | 完全正常 |
+| `so_open` / `apk_analyze` 直连可读路径 | `/data/app/<pkg>/lib/<abi>/*.so`、`base.apk`（`644`/`755`，世界可读） |
+| 全部 ELF 分析 | rizin / LIEF / capstone / ghidra 全在 APK 的 `lib/` 里 |
+| `edit_*` / `build_so` | 输出到 App 自己的外部私有目录 |
+
+非 root 的边界在于**找不到路径**而非读不到文件：`/data/app` 是 `0711`，不能 `ls`，但知道确切路径就能穿过。
+`/data/data/<other>` 是 `0700`，非 root 物理上无解。
+
+### 原生分析后端
+
+| 后端 | 用途 |
+| --- | --- |
+| **Rizin** | 函数分析、CFG、xref、crypto 扫描、ESIL、字节搜索、反汇编、汇编、Ghidra 反编译 |
+| **LIEF** | ELF 解析、section 内容读写、section header 重建、符号修改、地址 patch |
+| **rz-ghidra** | `libcore_ghidra.so`，提供 `pdg` 伪代码 |
+| **Capstone / Keystone / Unicorn** | Unidbg 模拟执行与指令编解码 |
+| **Blutter** | Flutter 3.44.x / Dart 3.12.2 arm64 AOT 离线分析 |
+
+Rizin 版本由 CI 自动取上游最新 release tag，不再 pin 固定版本。
+
+### 特色分析工具
+
+| 工具 | 作用 |
+| --- | --- |
+| `jni_api` | 扫描 `JNINativeMethod` 三指针表，把 Java 方法名/签名映射到真实原生地址 |
+| `packer_api` | 加固/壳静态指纹：厂商标记、逐段 Shannon 熵、入口点异常、反分析字符串 |
+| `obfusc_api` | 基于真实 basic block 图的 OLLVM dispatcher 识别与扁平化度量 |
+| `strdecrypt_api` | 密文块定位 + 256 个单字节 XOR/add/sub/rol/ror 全量扫描 + 多字节 XOR / RC4 试解 |
+| `antidebug_api` | 按 import / string / code_pattern 三级证据分级 |
+| `import_api` | 经 `.gnu.version_r` 把导入符号精确归属到源库 |
+| `flutter_blutter` | Flutter AOT 快照分析与 Dart 类/方法恢复 |
+| `elf_*` 系列 | `elf_abi_profile` / `elf_byte_ledger` / `elf_section_anomaly` / `elf_phdr_invariants` / `elf_dynamic_tags` / `elf_dt_flags` / `elf_hash_tables` / `elf_reloc_census` 共 8 项 |
+| `apk_*` 系列 | 签名校验、证书信息、ZIP 异常、ABI 覆盖 |
+
+所有静态工具**不执行目标文件**，对不可信输入安全；结论带证据与置信度，不做过度断言。
+
+---
+
+## 快速开始
+
+### 安装
+
+从 [GitHub Releases](https://github.com/Alien-Et/SOMCP/releases) 下载对应 ABI 的 APK：
 
 ```text
-app/build/outputs/apk/release/app-arm64-v8a-release.apk
+SOMCP-<version>-arm64-v8a.apk     # 绝大多数手机装这个
+SOMCP-<version>-universal.apk     # 不确定 ABI 时装这个
 ```
 
-不确定 ABI 时安装：
+同目录的 `SHA256SUMS` 可用于校验完整性。
 
-```text
-app/build/outputs/apk/release/app-universal-release.apk
+### 启动
+
+打开 App → 首页点「启动」→ 服务在 `8000` 端口起来。
+
+首页会显示：
+
+- 服务状态（运行中 / 已停止）
+- 监听地址与端口（本机回环 / 局域网两种 URL）
+- Root 授权状态卡
+
+### 连接
+
+**电脑侧（推荐 adb forward）**：
+
+```bash
+adb forward tcp:8000 tcp:8000
+# MCP 端点：http://127.0.0.1:8000/mcp
 ```
 
-## GitHub 更新
-
-应用只通过 `bilieebiliee1-design/SOMCP` 的 GitHub 正式 Releases 检测更新。普通提交、分支、构建产物和未发布 tag 都不会被视为更新，draft 与 prerelease 也不会进入自动更新通道。
-
-推荐 Release tag 使用 `v<versionName>`，并上传按 ABI 命名的 APK（`.github/workflows/release.yml` 在打包阶段把 `app-<abi>-release.apk` 统一重命名为下面的名字、顺带生成 `SHA256SUMS`，所以资产名与 tag 里的版本号始终一致）：
+**同局域网直连**：
 
 ```text
-SOMCP-1.0.22-arm64-v8a.apk
-SOMCP-1.0.22-armeabi-v7a.apk
-SOMCP-1.0.22-x86.apk
-SOMCP-1.0.22-x86_64.apk
-SOMCP-1.0.22-universal.apk
+http://<手机IP>:8000/mcp
 ```
 
-可同时上传同名 `<apk>.sha256` 或统一的 `SHA256SUMS`。检测器会优先选择当前设备 ABI；只要 release 存在校验资产，安装前就会强制验证 SHA-256，校验文件仅从 GitHub 官方域获取（与 APK 的第三方镜像下载严格分离），获取失败或不匹配都会直接中止安装。只有完全未发布校验资产的版本才允许以未验证状态安装。
+**验证服务**：
 
-v1.0.17 / v1.0.19 / v1.0.20 的资产是早年手工上传的 `SOMCP-main-<abi>.apk`，名字里没有版本号；更新器仍能按 ABI 子串选中并正常安装，只是人工核对资产与 tag 时会对不上。这几个 release 不再回溯改名（`SHA256SUMS` 里写的就是旧文件名，改名会让校验资产与文件对不上）。
+```bash
+curl -s -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}'
+```
 
-Release 输出体积随原生后端更新变化，以 GitHub Release 资产页面为准。
-
-## 核心能力
-
-- Android 原生前台服务，不依赖 Python 运行环境。
-- Compose + Material 3 界面。
-- Ktor CIO MCP HTTP 服务，默认端口 `8000`。
-- MCP token 访问控制（出厂默认开启），可绑定 `127.0.0.1` 或 `0.0.0.0`。
-- 通过系统文件选择器授权工作目录。
-- 支持独立 `.so` 与 APK 内 `lib/<abi>/*.so` 工作流。
-- Rizin 原生后端：函数分析、CFG、xref、crypto 扫描、ESIL、字节搜索、反汇编、汇编。
-- LIEF 原生后端：ELF 解析、section 内容读写、section header 重建、符号修改、地址 patch。
-- 编辑会话：snapshot、rollback、undo、redo、check、audit、persist。
-- 构建导出：自动改名/覆盖、patch report、多输出变体、镜像到工作目录。
-- Cloudflare Tunnel：quick/named 隧道、keepalive、状态统计。
-- 可选 Unidbg：`emulate_call`、`emulate_dump`。**注意**：Unidbg 的 Android 原生库（`libcapstone.so` / `libkeystone.so` / `libunicorn.so` / `libjnidispatch.so`）不随 Debug APK 内置，需自行交叉编译 unidbg 上游 native 并放入 `app/src/main/jniLibs/<abi>/` 后重新构建，或在设备上额外安装；其中 `libunicorn.so` 必须是 unidbg unicorn2 的 JNI 桥（导出 `Java_com_github_unidbg_arm_backend_unicorn_Unicorn_*`），只编译原始 unicorn 引擎不行，可用 `tools/verify_unicorn_jni.py` 校验。**官方 Release APK（v1.0.18+）已内置 Unidbg 原生库，但只有 64 位 ABI 完整可用**：arm64-v8a / x86_64 四个库齐全，装完就能用 `emulate_call` / `emulate_dump`；armeabi-v7a / x86 只有 `libcapstone.so` / `libkeystone.so` / `libjnidispatch.so`，**不含 `libunicorn.so`**（unicorn/QEMU 需要 `__uint128_t`，Android NDK 的 32 位工具链不提供，`app/build.gradle.kts` 在打包阶段就对 32 位 ABI 剔除该库），所以 `emulate_*` 在 32 位设备上不可用，要用模拟执行得装 64 位 ABI 的包。库缺失时 `system_control(action=status)` 的 `emulation.setup` 会明确标注 `requires-extra-install`，`emulate_*` 调用返回 `EMULATOR_UNAVAILABLE` 并说明缺失原因，不会伪装成可用。
-- 完全离线 Flutter AOT 分析：内置 Flutter 3.44.2–3.44.7 / Dart 3.12.2 arm64 Blutter Runner；其他版本返回明确的不支持信息。
-- JNI 动态注册静态还原（`jni_api`）：扫描 `JNINativeMethod` 表，把 Java 方法名/签名映射到真实原生地址，并解析回符号。
-- 加固/壳静态指纹识别（`packer_api`）：厂商标记、逐段熵、入口点异常、段名异常、反分析字符串，输出带证据的排序判定。
-- 控制流混淆检测（`obfusc_api`）：基于真实 basic block 图的 dispatcher 识别、扁平化因子、bogus edge 度量，替代高误报的符号名启发式；`action=deflatten` 进一步重建候选真实边。
-- 加密字符串辅助解密（`strdecrypt_api`）：定位密文块、全量扫描 256 个单字节 XOR/add/sub/rol/ror 密钥并按可打印率排序，支持传入多字节 XOR / RC4 密钥试解。
-- 反调试/反 hook 扫描（`antidebug_api`）：按 import / string / code_pattern 三级证据分类，输出风险等级。
-- 导入符号溯源（`import_api`）：经 `.gnu.version_r` 把导入符号精确归属到源库，标注 Bionic 库用途。
-- 静态深度分析 AI（`static_analyze_ai`）：与 `dynamic_analyze_ai` 对等的静态入口，AI 在独立上下文自动驱动取证工具（`so_open → analyze_functions → … → analysis_report`）并输出结构化 Markdown 报告。
-- 应用日志远程读取（`system_logs`）：快照/过滤/清空应用内 500 行日志环形缓冲，远程排查工具错误不再依赖 App 日志页。
-- 工作区辅助（`workspace_overview` / `cache_clear` / `workspace_export`）：概要视图、引擎缓存清理、当前（含编辑会话）SO 字节 base64 导出（附 SHA-256 与架构）。
-- Cloudflare 永久隧道支持配置要展示的 HTTPS 公网地址；认证失败会停止重连并提示更新 token。
-- APK 内 SO 使用流式扫描与按需提取，分析页可一键释放工作区、索引缓存和已结束的 Blutter 数据。
-- 精简工具列表：默认暴露核心 + 网关（`lowlevel` 与 `agent`）+ meta 工具，完整能力通过 `meta_info(action=describe)` 发现。网关类不参与热度晋级——它们是入口而非证据调用，藏起来等于让对应能力不可达。
-
-## MCP 工具体系
-
-当前共 84 个内置工具，准确数量以 `tools/list` 返回的 `_meta.fullToolCount` 为准；默认 lean 模式会广告核心、底层网关和 meta 工具，降低 LLM 初始化上下文成本。
-
-推荐工作流：
+### 典型工作流
 
 ```text
-so_open(action=list)
-so_open(path=...)
+so_open(path="/data/app/~~xxx==/com.foo-yyy==/lib/arm64/libbar.so")
 analyze_elf(view=stats)
 analyze_functions
-read_disasm(locator=...)
+read_disasm(locator="so_function:libbar.so!JNI_OnLoad@0x1ecc")
+jni_api(action=scan)
 session_open
 edit_asm(dryRun=true)
 session_history(action=check)
 build_so
 ```
 
-搜索语法：
+APK 分析：
 
 ```text
-search_bytes(pattern="5F2403D5")          # Rizin 原生 byte pattern，紧凑 hex
-search_bytes(pattern="5F24..D5")          # Rizin nibble 通配符，. 表示任意半字节
-search_bytes(pattern="5F2403D5:FFFF00FF") # Rizin bytes:mask
-search_bytes(pattern="5F 24 ?? D5")       # MCP 兼容写法，会规范化为 5F24..D5 后交给 Rizin
-search_strings(prefix="JNI.*Load", regex=true)
+apk_analyze(path="/data/app/~~xxx==/com.foo-yyy==/base.apk")
+flutter_blutter(action=inspect, path="/data/app/~~xxx==/com.foo-yyy==/base.apk")
 ```
 
-AI 调用注意事项：
+> `so_open(action=open_url)` 仍需要先选工作目录才能下载落盘。这是唯一保留 SAF 的地方，
+> 因为下载文件总得有个存放位置；日常分析走 `path=` 直连，完全不需要它。
 
-- `so_open`、`search_bytes`、`analyze_*`、`read_disasm` 等重型工具受全局并发闸门保护；自动化客户端应串行调用，遇到 `SERVER_BUSY` 按 `retryAfterMillis` 重试同一请求。
-- `search_bytes` 优先使用 Rizin 搜索；返回的 hit 会包含 `addr`、`hexAddr`、`fileOffset`、`section`、`sectionOffset`，可直接衔接 `read_hexdump` 或 patch 工具。
-- `search_strings(regex=true)` 使用 Kotlin 正则；非法正则会返回结构化错误，不会被当作空结果。
-- 电脑侧直接调用手机 MCP 时可先执行 `adb forward tcp:8000 tcp:8000`，然后使用 `http://127.0.0.1:8000/mcp`。
+---
 
-工具发现：
+## MCP 工具体系
+
+当前共 **81 个内置工具**（准确数量以 `tools/list` 返回的 `_meta.fullToolCount` 为准）。
+
+默认 **lean 模式**只广告核心、底层网关和 meta 工具，降低 LLM 初始化上下文成本；
+完整能力通过 `meta_info(action=describe)` 发现。
+
+### 工具发现
 
 ```text
 meta_info(action=help)
@@ -124,266 +209,228 @@ meta_info(action=describe, tools=["edit_asm", "build_so"])
 meta_info(action=workflows)
 meta_info(action=suggest, workspaceId="...")
 meta_info(action=errors)
-meta_info(action=report, workspaceId="...", writeToFile=true)
 meta_info(action=capabilities)
 meta_info(action=health)
 ```
 
-`meta_info(action=report)` 会生成完整分析报告，包含 ELF 统计、节区、动态符号、字符串、Rizin 函数、crypto 扫描和建议，并可落盘到 app 私有 reports 目录。
+`meta_info(action=capabilities)` 是**真实能力面**的唯一来源，会明确列出 supported / partial / missing，
+不会把未实现的底层 API 误报为已覆盖。
 
-底层 API 通过 capability registry + 4 个聚合网关暴露，避免 MCP 工具数量爆炸。`meta_info(action=capabilities)` 是真实能力面来源，会明确列出 supported / partial / missing，避免把未实现的底层 API 误报为已覆盖：
+### 底层聚合网关
+
+底层 API 通过 capability registry + 聚合网关暴露，避免工具数量爆炸：
 
 ```text
 rizin_api(action=capabilities|command|analyze|functions|cfg|xrefs|search_bytes|crypto|esil|diff|asm|disasm|decompile)
-lief_api(action=capabilities|parse|list|patch_address|add_export|remove_symbol|build|fix_sections|report)
-unidbg_api(action=capabilities|status|call|dump)
-xanso_api(action=capabilities|status|fix_sections)
+lief_api(action=capabilities|dispatch|parse|parse_any|list|patch_address|add_export|remove_symbol|build|fix_sections|report)
+unidbg_api(action=capabilities|dispatch|status|call|dump)
+xanso_api(action=capabilities|dispatch|status|help|build-section|fix_sections)
 flutter_blutter(action=inspect|analyze|status|result|cancel|packages|prune)
-dynamic_api(action=capabilities|dispatch|status|analyze)
-dynamic_analyze_ai(evidence=...|function=...|request=...)
-jni_api(action=capabilities|scan|resolve|method_table, query=...)
+dynamic_api(action=capabilities|dispatch|status|roots|methods|analyze,
+            op=unidbg_session_open|unidbg_session_call|frida_hook|frida_call|…)
+jni_api(action=capabilities|scan|resolve|method_table)
 packer_api(action=capabilities|scan|fingerprint)
-obfusc_api(action=capabilities|scan|detect|deflatten|deflatten_capabilities, limit=40, locator=...)
-strdecrypt_api(action=capabilities|scan|decrypt|hints, locator=..., length=32, keyHex=...)
+obfusc_api(action=capabilities|scan|detect|deflatten|deflatten_capabilities)
+strdecrypt_api(action=capabilities|scan|decrypt|hints)
 antidebug_api(action=capabilities|scan|detect)
 import_api(action=capabilities|trace|scan)
-agent_api(action=roles|run|capabilities, role=..., task=..., workspaceId=...)
 ```
 
-`jni_api` 静态还原 JNI 动态注册：扫描只读数据段里的 `JNINativeMethod` 三指针表（name / signature / fnPtr），把「Java 方法名 → 真实原生地址」直接映射出来，并解析 fnPtr 回 `.symtab` / `.dynsym` 符号。Android 上多数 native 方法不导出 `Java_*` 符号，而是在 `JNI_OnLoad` 里用 `RegisterNatives` 动态注册，因此普通符号表看不到这层映射。`packer_api` 做加固/壳静态指纹：厂商标记串（360 / 梆梆 / 爱加密 / 阿里 / 腾讯乐固 / UPX）、逐段 Shannon 熵、`e_entry` 落在 `.text` 之外的壳 stub 特征、非标准/空段名、反分析字符串。两者都是纯字节检查，不执行目标文件，对不可信输入安全；结论带证据与置信度，不会把「混淆构建」直接断言成「商业加固」。
+`dynamic_api` 是两层的：`action` 选动作，`op` 选具体后端操作。动态分析有 unidbg（模拟）和
+frida（真机 hook）两个后端，共用同一套编排层；`dynamic_api(action=capabilities)` 的
+`backends.dynamic` 会如实标注各后端是否可用。
 
-`obfusc_api` 从**真实 basic block 图**判定控制流混淆，而不是靠符号名猜：识别 dispatcher 块（高 fan-in + 薄块体，即只做比较跳转的 switch）、算扁平化因子、量 bogus edge 候选比例，逐函数给 `flattened` / `suspected` / `clean` 与置信度。它是 `analyze_elf` 里 `hasOllvm` 标签的结构化替代——后者匹配的是 `.cold.`、`__clang_call_terminate` 这类**标准 clang 产物**，在正常 NDK Release 上也会命中。
-
-`action=deflatten` 在此基础上重建去扁平化后的候选控制流：dispatcher 集合与检测器**共用同一判据和阈值**（避免两个 pass 对同一函数给出不同 dispatcher），另外重建被检测器丢弃的前驱表，并区分 trampoline（薄块且所有后继都是 dispatcher）。它输出的是**候选真实边**而非「已还原的 CFG`：Rizin 每个基本块只给 `addr/size/ninstr/jump/fail`，编码真实后继的**状态变量和 case 表并不在输入里**，所以任何单一「还原边」都是猜测。该 action 因此固定返回 `verdict=candidates_only` 与 `confidence=low`，并在 `limitations` 里写明下一步（用 `read_disasm` 读每个源块的状态赋值，或用 `emulate_call` 观测真实路径）——与检测器「宁可承认不知道，也不误判」的标准一致。
-
-`strdecrypt_api` 处理编译期字符串加密（OLLVM `struc`/`encloud-cc`、商业加固壳、手写变体把密文留在 `.rodata`、运行时经桩函数解密）。它只声称做两件事里的一半：**从字节反推变换**。`action=scan` 在已分配非可执行段里定位既非明文文本也非零填充的字节段作为密文候选；`action=decrypt` 把 256 个单字节 XOR / add / sub / rol / ror **全量**扫一遍并按可打印 ASCII 占比排序，多字节 XOR 与 RC4 则只试调用方给的密钥（密钥空间无界，无法枚举）。判定门槛是可打印率 ≥ 0.75 且该比例**始终回传**，因为随机数据撞出可打印输出的概率不低，把未经验证的猜测当作「已还原字符串」比不报更糟。**不覆盖** AES/DES/ChaCha 与运行时派生密钥，`action=hints` 给出手工路线（找调用方 → 读解密循环 → 定位 RC4 的 256 字节 KSA / AES 的多轮循环），以及更可靠的动态路线（`dynamic_api` / `unidbg_api` 直接从内存读明文）。
-
-`antidebug_api` 按证据强度分级扫描反调试/反 hook：`import`（加载器必须解析的符号，近乎确证）、`string`（`/proc/self/*` 等字面量，弱）、`code_pattern`（x86-64 inline detour 跳板序列）。`import_api` 解析 `.gnu.version_r`（DT_VERNEED）把每个导入符号**精确归属**到源库，并标注 Android Bionic 各库用途；缺版本表时降级为 `DT_NEEDED` 启发式，并在 `evidence` 字段明说「库名不是来源证明」。这三项同样不执行目标文件。
-
-## 动态分析（手动加载到内存 → AI 分析）
-
-SOMCP 提供一套**独立**的动态分析工具流程，与静态 deep-analysis 循环彼此分离，把「把 `.so` 手动加载到内存 → 执行 → 采集证据 → 交给 AI 分析」串成一条可被 MCP 调用的链路。核心入口是两个工具：
+### 搜索语法
 
 ```text
-dynamic_api(action=capabilities|dispatch|status|analyze, op=unidbg_session_open|unidbg_session_call|unidbg_session_registers|frida_hook|frida_call|frida_read|frida_write|frida_replace|frida_modules|frida_script|analyze, backend=unidbg|frida, targetFunction=...)
-dynamic_analyze_ai(function=... | evidence=...)
+search_bytes(pattern="5F2403D5")          # Rizin 紧凑 hex
+search_bytes(pattern="5F24..D5")          # nibble 通配符，. 表示任意半字节
+search_bytes(pattern="5F2403D5:FFFF00FF") # bytes:mask
+search_bytes(pattern="5F 24 ?? D5")       # MCP 兼容写法，自动规范化为 5F24..D5
+search_strings(prefix="JNI.*Load", regex=true)
 ```
 
-两个后端共用同一套编排层 `dynamicDispatch`：
+返回的 hit 包含 `addr` / `hexAddr` / `fileOffset` / `section` / `sectionOffset`，
+可直接衔接 `read_hexdump` 或 patch 工具。
 
-- **unidbg（模拟）**：`unidbg_session_open` 把选中的 `.so` 映射进模拟内存，`unidbg_session_call` 解析指定导出函数并执行，随后采集寄存器和目标地址的内存 dump。无需真机，适合快速验证目标函数行为。
-- **frida（真机 hook）**：`FridaBridge` 以纯 Kotlin 实现 `frida-server`/`frida-gadget` 的 TCP 协议客户端，`frida_hook` 通过 JS agent（Interceptor/Module）挂钩目标函数捕获入参与返回，`frida_call` 触发调用并回读 hook 结果（参数支持 int、`0x…` 十六进制指针与自动 `allocUtf8String` 的字符串），`frida_write` 写内存、`frida_replace` 以 JS 片段替换函数实现、`frida_modules` 枚举已加载模块、`frida_script` 在 agent 内执行任意 JS。**注意**：`frida-server`/`frida-gadget` 不随 APK 内置，需在已 root 设备上单独安装并在推开时先对目标进程 `ptrace`/注入；未就绪时 `dynamic_api(action=capabilities)` 的 `status.fridaAvailable` 会如实标注 `false`，不会伪装成可用。
+### 并发与限流
 
-`dynamic_analyze_ai` 复用 `RikkaAgentEngine`，把 `dynamicRun` 证据（寄存器现场、内存 dump、hook 记录、调用返回）喂给 AI 生成结构化动态分析报告：
+`so_open`、`search_bytes`、`analyze_*`、`read_disasm` 等重型工具受全局并发闸门保护。
+自动化客户端应**串行调用**，遇到 `SERVER_BUSY` 按返回的 `retryAfterMillis` 重试同一请求。
+
+---
+
+## 设置
+
+设置页为单页 M3 列表，分三组：
+
+### 常用
+
+| 项 | 内容 |
+| --- | --- |
+| 服务配置 | 端口、访问 URL、工具暴露策略 |
+| 保活 | 唤醒锁、悬浮窗、开机自启 |
+| 访问 | 绑定地址（`127.0.0.1` / `0.0.0.0`）、Token 开关 |
+| 语言 | 中文 / English |
+
+### 工具
+
+| 项 | 内容 |
+| --- | --- |
+| 审计 | 自动快照、审计日志、最大快照数 |
+| Blutter | Flutter 分析（内置 Runner 版本、兼容性规则） |
+| 探测 | 环境探测 |
+| 调用审计 | 工具调用统计 |
+
+### 其他
+
+| 项 | 内容 |
+| --- | --- |
+| 日志 | 运行日志环形缓冲 |
+| 导出 | 构建产物列表与清理 |
+| 备份恢复 | 设置导入导出 |
+
+---
+
+## 构建
+
+### CI 构建（推荐）
+
+推 tag 或手动触发 workflow 即可，`.github/workflows/build.yml` 会完成全套原生编译：
 
 ```text
-dynamic_api(action=capabilities)        # 查看 backends.dynamic，确认 unidbg/frida 可用性
-dynamic_api(action=dispatch, backend=unidbg, op=unidbg_session_open, targetFunction="JNI_OnLoad")
-dynamic_api(action=dispatch, backend=unidbg, op=unidbg_session_call, targetFunction="JNI_OnLoad")
-dynamic_analyze_ai(function="JNI_OnLoad")  # 或直接传入上一步 evidence
+Init submodules
+Set up JDK 17 / Gradle 9.6.1 / Android SDK 36 / NDK 29.0.14206865 / CMake 3.22.1
+Clone Rizin source (latest release tag)
+Build native backends (Rizin + LIEF)
+Build Unidbg native libs (capstone/keystone/unicorn)
+Build rz-ghidra plugin (libcore_ghidra.so)
+Restore release signing keystore
+Build release APKs
+Verify and ensure v2/v3 APK signing
+Upload APK
 ```
 
-`meta_info(action=capabilities)` 的 `backends.dynamic` 是动态分析的能力真实面来源，明确列出 unidbg/frida 的支持状态与限制。
-
-`rizin_api(action=command)` 提供受控 Rizin raw command 通道，用于覆盖大量 Rizin 命令式底层能力；为安全起见，写入、文件、shell 等危险命令会被阻止。
-
-批量流水线支持事务模式：
+产物：
 
 ```text
-meta_info(action=batch, transactional=true, steps=[...])
+app-arm64-v8a-release.apk       # 约 55 MB
+app-armeabi-v7a-release.apk
+app-x86-release.apk
+app-x86_64-release.apk
+app-universal-release.apk       # 约 131 MB
 ```
 
-事务模式会在执行前为涉及 `workspaceId + editSessionId` 的编辑会话自动创建 snapshot；后续步骤失败时会自动 rollback 到事务前快照。
+**CI 包与本地 debug 包的关键差异**：CI 包含全套 native（`libkeystone.so`、`libunicorn.so`、
+`libjnidispatch.so`、`libcapstone.so`、`libcore_ghidra.so`、`librz_native.so` + 27 个 `librz_*.so`），
+Unidbg 模拟执行可用；本地 debug 包因 submodule 常为空，`emulate_*` 会报 `EMULATOR_UNAVAILABLE`。
 
-分页继续：
+### 本地构建
 
-```text
-meta_info(action=continue, cursor="page:...")
-```
+环境要求：
 
-系统状态：
-
-```text
-system_control(action=status)
-```
-
-`health/status` 会返回运行时信息，包括 APK 版本、设备 ABI、nativeLibraryDir、`librz_native.so` 大小、mtime 和 SHA-256 短指纹，用于确认设备上实际运行的是不是最新 APK。
-
-## 子代理（scoped sub-agents）
-
-前提是设置 → AI 里已填好 **API 地址、API Key、模型 ID**——子代理不另设一套凭据，全部复用这三个值（以及 provider、temperature、自定义 headers/body）。
-
-一个子代理 = 一次**独立上下文**的取证运行：它只拿到自己角色白名单内的工具、只有一个被指派的问题、有自己的迭代上限，返回紧凑证据块而不是整体报告。两侧入口共用同一个 `SubAgentRunner`：
-
-- **手机内置 agent**：AI 深度分析与动态分析的工具表里多出 `spawn_subagent(role, task)`，主模型自己决定何时派人手；子代理的工具结果不再回灌到主上下文，只回传结论，这正是省 token 的地方。
-- **电脑侧 MCP 客户端**：`agent_api` 网关。它属于网关类，默认 lean 模式就会出现在 `tools/list` 里（早期版本把它按普通 EXTRA 处理，导致客户端根本看不到子代理入口）。
-
-```text
-agent_api(action=roles)                  # 角色、每个角色的工具白名单、当前上限与是否已配置
-agent_api(action=run, role="xref_tracer", task="libfoo.so 里 JNI_OnLoad 注册了哪些方法，逐个给地址", workspaceId="ws_...")
-agent_api(action=capabilities)           # supported / partial / not_covered，按实说
-```
-
-内置 5 个角色（白名单只读取证类工具，永不包含 `edit_*` / `build_so` / `session_*` / `app_config`）：
-
-| 角色 | 干什么 | 迭代建议 |
-| --- | --- | --- |
-| `xref_tracer` | 调用链与交叉引用，含 `RegisterNatives` 动态注册入口 | 14 |
-| `crypto_locator` | 算法常量 / S-box / 密钥调度定位与调用点 | 14 |
-| `packer_profiler` | 壳、控制流混淆、反调试、导入来源画像 | 10 |
-| `dyn_probe` | unidbg 模拟或 Frida 真机跑目标函数采证 | 12 |
-| `generalist` | 上述都不匹配时的通用静态取证 | 12 |
-
-`workspaceId` 由调用方继承：子代理拿得到同一个工作区，不会重复 `so_open` 再解析一遍目标。角色白名单里若出现目录里不存在的工具名，`action=roles` 会同时列 `declared_tools` 与 `unresolved_tools`——漂移可见，不会静默缩水。
-
-三道闸门（设置 → AI → 子代理，`agent_api(action=roles)` 的 `limits` 原样回报）：
-
-- **嵌套深度上限**（默认 1，最大 2）：=1 时子代理不再拿到 `spawn_subagent`，杜绝自我复制。
-- **单次会话子代理配额**（默认 4）：**这一项才是约束 API 花销的**；用完时 `spawn_subagent` 回 `sub_agent_budget_exhausted`，主模型继续自己做完，而不是整轮失败。
-- **单子代理迭代上限**（默认 12）与**并发子代理数**（默认 2）：迭代数按 `min(角色建议, 该上限)` 生效；并发是全进程槽位池，改设置只影响之后的派生。
-
-失败与边界的处理是明确的：子代理抛错回 `sub_agent_failed`（父代理改用直接工具），槽位被占满等 5 分钟后回 `sub_agent_queue_timeout`，跑满迭代上限时**保留已取到的部分证据**并标注在何处停止。子代理之间、子代理与父代理之间不共享对话历史，也没有跨会话记忆。
-
-## 设置项
-
-- MCP 访问控制：token、绑定地址、访问 URL。
-- 返回数量：默认 limit、字符串 limit、反汇编窗口、hexdump、请求体上限。
-- 导出：冲突策略、patch report、镜像到工作目录、patch 字节上限、构建产物列表上限。
-- 编辑校验与审计：自动快照、审计日志、审计持久化、最大快照数、最大审计数、diff 范围数。
-- 工具暴露：lean tools、自适应 lean、禁用工具列表、工具结果字符上限、工具调用频率限制。
-- 性能保护：重型工具并发上限、请求超时、工具统计持久化。
-- 原生执行：Unidbg 模拟执行开关。
-- AI 深度分析：provider、API 地址、API Key、模型 ID（可从 `action=roles` 旁的端点拉取模型列表）、temperature、最大迭代、历史压缩阈值、自定义 headers/body、系统提示词、工具调用模式（`full`=原生 Function Calling；`skills_like`=工具以 Skills 风格 Markdown 注入提示词、模型以 `<tool_call>` 标签调用，参考 AstrBot `tool_schema_mode`，省 token 且兼容不支持函数调用的端点，非法值回退 `full`）。
-- 子代理：启用开关、嵌套深度上限、单次会话派生配额、单子代理迭代上限、并发子代理数（详见「子代理」一节；凭据复用上面的 AI 配置，不单独设置）。
-- Blutter：查看内置 Flutter 3.44 / Dart 3.12.2 Runner、离线执行方式和精确兼容性规则。
-- Cloudflare Tunnel：quick/named、目标端口、协议、IP 版本、日志等级、keepalive、重连退避。
-- APK MCP 桥接：APK MCP URL、自动探测、工具合并、转发超时。
-
-## 从零构建
-
-准备环境：
-
-- Windows 10/11
 - JDK 17
 - Android SDK 36
 - Android NDK `29.0.14206865`
 - CMake `3.22.1`
 - Gradle `9.6.1`
 
-获取 Rizin 源码（Rizin 反汇编/分析后端，非 git 子模块，需手动 clone 一次）：
+```bash
+# Rizin 源码（非 git submodule，需手动 clone 一次）
+git clone --depth 1 --branch <latest-tag> https://github.com/rizinorg/rizin.git third_party/rizin-src
 
-```powershell
-git clone https://github.com/rizinorg/rizin.git third_party/rizin-src
+# 原生依赖
+bash build-native-android.sh
+
+# 打包
+./gradlew :app:assembleDebug
 ```
 
-构建 Rizin / LIEF 原生依赖：
+> **注意 Gradle 增量缓存**：修改 Kotlin 源码后若怀疑没有生效，用 `--rerun-tasks` 强制重编。
+> 本项目遇到过 `assembleDebug` 报成功但 dex 里没有新代码的情况。
 
-```powershell
-.\build-rizin-all.ps1
-.\build-lief-all.ps1
-```
+### Release 优化
 
-构建脚本不依赖任何固定机器路径：工具链通过环境变量解析（`ANDROID_NDK_HOME` / `ANDROID_HOME` 定位 NDK，`MINGW_HOME` / PATH 定位 MinGW 宿主编译器，`ANDROID_HOME` 定位 CMake/Ninja），也支持显式参数覆盖。例如：
+- R8 代码压缩与混淆
+- Android 资源压缩
+- ABI 分包 + universal 包
+- v1/v2/v3/v4 APK 签名
+- 严格 native 链接：禁止 Rizin/LIEF/zstd 未解析符号混入 `.so`
+- JNI keep 规则：保留 `RizinNativeEngine` / `LiefEngine` 的类名和 native 方法名
 
-```powershell
-# Rizin：指定源码树 / NDK / 宿主 MinGW（任一均可省略，缺省自动探测）
-.\build-rizin.ps1 -Abi arm64-v8a -RizinSrc D:\rizin-src -NdkRoot D:\Android\Sdk\ndk\29.0.14206865 -HostTools D:\mingw64
-.\build-rizin-all.ps1 -RizinSrc D:\rizin-src   # 一次构建全部 4 个 ABI（含 arm64-v8a）
-# LIEF：指定 CMake / Ninja / NDK
-.\build-lief.ps1 -Abi arm64-v8a -NdkRoot D:\Android\Sdk\ndk\29.0.14206865
-```
+---
 
-**关于 Rizin 的 host 编译器（build machine）**：Rizin 构建时需要用它生成少量 host 工具，Windows 下官方支持 MSVC，本构建脚本默认使用 MinGW-w64 作为 host（自动探测 `MINGW_HOME` / PATH，`-HostTools` 可覆盖），并会在 meson setup 前**自动对 Rizin 源码树应用幂等补丁**（`librz/util/` 下的 `file.c` / `time.c` / `sys.c` / `subprocess.c`：放宽 `_MSC_VER` 条件使其同时覆盖 MinGW 的 `__WINDOWS__`，并为 MSVC secure-CRT 的 `_wdupenv_s` / `_wputenv_s` / `_chsize_s` / `_snwprintf_s` 插入 MinGW shim）。这些补丁只改本地的 Rizin checkout，已打过则跳过，用 `-SkipPatch` 可关闭。若改用 MSVC host（需自行准备 VsDevCmd 环境并把 `rizin-native.ini` 指向 `cl.exe`），则无需这些补丁。
+## 与上游的差异
 
-（可选）构建 Unidbg 模拟后端所需的 Android 原生库（capstone/keystone/unicorn，默认不内置，详见“核心能力”中 Unidbg 说明）：
+本分支相对 `bilieebiliee1-design/SOMCP` 的主要改动：
 
-```powershell
-# 子模块统一用脚本初始化（见下方说明），不要直接 git submodule update：
-# 嵌套 pin 若是上游已不存在的死提交，它只会回一句 upload-pack: not our ref。
-bash tools/init-submodules.sh
-.\build-unidbg-native.ps1
-```
+### 移除
 
-> **`rizinorg/ghidra` 是会被清洗/重写历史的仓。** rz-ghidra 里 gitlink 记录的嵌套 pin
-> （`ghidra/ghidra`）因此可能变成上游不存在的死提交，此时
-> `git submodule update --init --recursive` 的表现就是 `upload-pack: not our ref`。
-> 按分支名取 + 本地校验 gitlink SHA 的写法并不放宽 pin：它把这类失败提前到有名字的检核点，
-> 并直接给出「抬 gitlink 或改 tag」的处置指引。注意区别——对**可达**提交，按裸 SHA 的
-> fetch 本身是通的（实测 `git fetch --depth 1 origin 3e5d774` 成功，非尖端的可达提交同样成功），
-> 失败只发生在提交已经不存在的时候。CI 的解法见 `.github/workflows/*` 里的 “Init submodules”
-> 步骤与 `tools/init-submodules.sh`——但只有真正产原生库的那几条（`build.yml`、`release.yml`、
-> `test-v5..v11`）会跑它；纯 Gradle 的 `test.yml` / `test-v2..v4` 不初始化子模块。要留意的是
-> 这四条并非「读不到 `third_party/`」：`preBuild` 依赖 `buildUnidbgNative`，它确实会调
-> `build-unidbg-native.sh`，而该脚本缺这些目录时会在**第一个 ABI 就 `exit 1`**，只是这份失败被
-> `app/build.gradle.kts:290` 的 `catch` 降级成 `:291-296` 的 warning，因此在那里初始化子模块
-> 换不到任何信号，只换来克隆耗时与无关红点。
+- **「分析」Tab** 及配套的 `AnalyzeTab` / `AnalyzeController` / `AnalyzeDataAdapter` / `ElfOverviewPanel`
+- **工作目录 UI 与 SAF 授权流程**：不再有选目录入口。唯一残留是 `so_open(action=open_url)` 的下载落点
+  （`treeUri` 兼容字段），日常 `path=` 直连完全用不到
+- **Cloudflare Tunnel** 全链路：`CloudflareTunnelManager`、4 个 tunnel hook、runtimeInfo / CORS tunnel hosts、
+  14 个 tunnel 设置项、`TunnelStatsSection`、CI 里的 Go / cloudflared 编译步骤
+- **外观设置页**：`SettingsHub` 仍接收 `onTheme` / `onAccent` 等回调（`MainActivity` 侧仍在使用），
+  但设置列表里已不再有外观入口
+- 死代码：`DeepReportStore.kt`、`AiTypes.kt`、`ExternalLinks.kt`、`CrashReportActivity`、日志上报
+
+### 重构
+
+- **UI 单页化**：Compose + Material 3，两 Tab（控制台 / 设置），设置改为列表化三层导航
+- **Root 优先的路径解析**：`EngineRuntimeSources` 的 `analyzeApk` / `openWorkspace` / `resolveLocalSoSource`
+  全部改为 root 优先，废除 `copyViaRootToCache` 副本方案
+- **流式 APK 解析**：`ApkAnalyzer.analyzeRootStream` / `analyzeFile`，大包不进堆
+- **`RootShell`**：`listFiles` 改用 `find + stat`（原实现解析 `ls -la` 固定 9 列，设备实际格式不匹配导致全跳过）；
+  `walkFiles` 改为单条 `find` + 批量 `stat`（`/data/app` 7725 个 so 用时 0.12s）
+- **免 key**：`authEnabled` 默认 `false` + `lanNoAuthMigrated_v1` 迁移
+
+### 修复
+
+- `UnidbgEmulator` 的 ABI 判定：`endsWith("64")` → `contains("64")`
+  （`arm64-v8a` 结尾是 `v8a` 不是 `64`，原逻辑恒 false，导致 arm64 设备误报 32 位）
+- `apk_analyze` 外部路径 `EACCES`
+- `so_open(action=list)` 在无工作目录时返回空列表
+- CI CMake 4.x 兼容：`-DCMAKE_POLICY_VERSION_MINIMUM=3.5` + 幂等 sed 修 `cmake_policy(SET CMP0048 OLD)`
+- CI keystore 恢复：`tr -d '[:space:]'` 去空白 + `keytool -list` 校验
+
+---
+
+## 许可证与再分发
+
+本项目依据 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0-only）发布。
+第三方依赖、submodule、生成资源和补丁仍分别遵循各自上游许可证。
+
+> **再分发义务（重要）**
 >
-> 置备只走这一个入口，不要再另外 `git clone` 一份 `third_party/rz-ghidra`：脚本会把它
-> reset 到父仓 gitlink，而嵌套 pin 读的是 rz-ghidra 自己的 HEAD，预克隆只会让目录在
-> 无声无息中停在别的提交上。
+> 任何再分发（含修改、改名、二次打包版本）必须：
+>
+> 1. 保留版权与许可声明及 [NOTICE](NOTICE)；
+> 2. 继续以 AGPL-3.0 授权；
+> 3. 向每一位接收者提供完整对应源代码；
+> 4. 标注所做修改。
+>
+> 闭源分发、抹除署名或改名冒充原创即构成侵权——依 AGPL-3.0 第 8 条授权自动终止。
+> 本软件在 MCP `initialize` / 健康检查返回与「关于」页固定输出许可证、上游仓库与版权，
+> 作为运行时溯源证据。
 
-构建 release：
+---
 
-```powershell
-D:\Gradle\gradle-9.6.1\bin\gradle.bat :app:assembleRelease
-```
+## 免责声明
 
-验证原生库是否还有会导致 `dlopen` 失败的非系统未解析符号：
-
-```powershell
-.\verify-native-libs.ps1
-```
-
-如果输出全部为 `OK`，说明 Rizin/ZSTD/LIEF 等非系统符号已经在 APK 自带库内解析完毕。
-
-## 安装与验证
-
-建议先卸载旧包再安装，避免 Android 继续加载旧 native lib：
-
-```powershell
-adb uninstall com.soreverse.mcp
-adb install -r app\build\outputs\apk\release\app-arm64-v8a-release.apk
-```
-
-启动 MCP 后调用：
-
-```text
-meta_info(action=health)
-```
-
-预期：
-
-```json
-{
-  "nativeBackends": {
-    "rizin": { "available": true, "loadStatus": "loaded" },
-    "lief": { "available": true, "loadStatus": "loaded" }
-  }
-}
-```
-
-如果仍然报 `dlopen failed: cannot locate symbol ...`，请检查 `runtime.librzNative.sha256_16` 是否等于你本地最新 APK 中的 `librz_native.so` 指纹。
-
-## Release 优化
-
-Release 构建启用：
-
-- R8 代码压缩和混淆。
-- Android 资源压缩。
-- ABI 分包 + universal 包。
-- v1/v2/v3/v4 APK 签名。
-- 严格 native 链接：禁止 Rizin/LIEF/zstd 未解析符号混入 `.so`。
-- JNI keep 规则：保留 `RizinNativeEngine` / `LiefEngine` 的类名和 native 方法名。
-
-## 注意事项
-
-- 本项目采用 AGPL-3.0 许可证。任何再分发（含修改、改名、二次打包版本）必须：
-  - 保留版权与许可声明；
-  - 继续以 AGPL-3.0 授权；
-  - 向每一位接收者提供完整对应源代码；
-  - 标注所做修改。
-  - 闭源分发、抹除署名或改名冒充原创即构成侵权，依 AGPL-3.0 第 8 条授权自动终止，SOMCP 项目组将依法提起诉讼以维护自身权益。
-- 本工具只适合分析自己有权处理的文件。第三方二进制的逆向、修改和分发可能受法律、协议或平台规则限制。
+- 本工具只适合分析**自己有权处理**的文件。第三方二进制的逆向、修改和分发可能受法律、协议或平台规则限制。
 - 汇编补丁更适合等长覆盖或明确边界内 patch，不会自动搬移后续代码。
-- 手机无法单独证明自己从公网可访问；公网可达性需要远端客户端、Cloudflare Tunnel 或其他外部探测配合。
-- APK MCP 桥接依赖 MT 管理器侧边栏 APK MCP 功能在线，并需要 MT 管理器保持后台运行。
+- 手机无法单独证明自己从公网可访问；公网可达性需要远端客户端或外部探测配合。
+- 使用 root 能力读取其他应用数据前，请确认你拥有相应授权。
+
+---
+
+## 致谢
+
+- **[bilieebiliee1-design/SOMCP](https://github.com/bilieebiliee1-design/SOMCP)** — 上游项目，本分支的一切基础
+- [Rizin](https://github.com/rizinorg/rizin) — 逆向工程框架
+- [rz-ghidra](https://github.com/rizinorg/rz-ghidra) — Ghidra 反编译器集成
+- [LIEF](https://github.com/lief-project/LIEF) — ELF 解析与重写
+- [Unidbg](https://github.com/zhkl0228/unidbg) — 模拟执行
+- [Capstone](https://github.com/capstone-engine/capstone) / [Keystone](https://github.com/keystone-engine/keystone) — 反汇编与汇编
+- [Blutter](https://github.com/worawit/blutter) — Flutter AOT 分析
