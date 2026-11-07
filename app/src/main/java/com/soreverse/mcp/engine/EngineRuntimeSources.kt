@@ -303,11 +303,29 @@ internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSON
             path
         )
     }
-    // 【魔改】大 APK 走流式解析，避免 readBytes() 把整包读进内存导致
-    // OOM / IO_ERROR（实测 386MB BeautyPlus 包会挂）。阈值 64 MiB：
-    // 小包仍走原有 ByteArray 路径（含完整 AXML/Flutter 检测）。
+    // 【魔改】大 APK 走流式解析（不整包读进堆）。若 App 对该路径没有
+    // 读取权限（Android 分区存储，如 /sdcard/逆向/ 这类自建目录 EACCES），
+    // 用 root 把文件复制到 App 私有 cacheDir 再分析副本。
     if (local.isFile && local.length() > 64L * 1024L * 1024L) {
-        return@guarded ok(ApkAnalyzer.analyzeFile(local, path, entryLimit))
+        val target = try {
+            if (local.canRead()) local
+            else copyViaRootToCache(path, local.name)
+        } catch (t: Throwable) {
+            return@guarded err(
+                "APK_ACCESS_FAILED",
+                "Cannot read APK (${t.javaClass.simpleName}: ${t.message}); grant storage access or root",
+                "path", path
+            )
+        }
+        return@guarded try {
+            ok(ApkAnalyzer.analyzeFile(target, path, entryLimit))
+        } catch (t: Throwable) {
+            err(
+                "APK_STREAM_FAILED",
+                "Streaming APK analysis failed: ${t.javaClass.simpleName}: ${t.message}",
+                "path", path
+            )
+        }
     }
     val bytes = try {
         if (local.isFile) {
@@ -1074,3 +1092,25 @@ internal fun EngineRuntime.sourceSummary(dir: WorkDirectory, src: SoSource): Sou
 }
 
 internal fun EngineRuntime.sourceKey(src: SoSource): String = "${src.path}|${src.size}|${src.modified}"
+
+/**
+ * 【魔改】App 对某些外部路径（如 /sdcard/逆向/）因分区存储没有读权限时，
+ * 用 root 把文件复制到 App 私有 cacheDir，返回可直读的副本。
+ * 大文件不进堆：调用方用 ApkAnalyzer.analyzeFile 流式解析。
+ */
+private fun EngineRuntime.copyViaRootToCache(srcPath: String, name: String): java.io.File {
+    if (!RootShell.isAvailable()) {
+        throw java.io.IOException("root not available; cannot read restricted path")
+    }
+    val dest = java.io.File(context.cacheDir, "apk_copy_${System.currentTimeMillis()}_${name}")
+    val r = RootShell.exec(
+        "cp ${RootShell.shellQuote(srcPath)} ${RootShell.shellQuote(dest.absolutePath)} && " +
+            "chmod 644 ${RootShell.shellQuote(dest.absolutePath)}",
+        timeoutMs = 120_000L
+    )
+    if (!r.ok || !dest.isFile || dest.length() == 0L) {
+        dest.delete()
+        throw java.io.IOException("root copy failed: ${r.stderr.ifBlank { r.stdout }}")
+    }
+    return dest
+}
