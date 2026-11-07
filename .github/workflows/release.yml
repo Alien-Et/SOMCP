@@ -152,19 +152,28 @@ jobs:
           bash tools/blutter-matrix/build-blutter-runners.sh
 
       - name: Restore release signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE }}
+          KS_ALIAS: ${{ secrets.ALIAS }}
+          KS_ALIAS_PASS: ${{ secrets.ALIAS_PASSWORD }}
+          KS_STORE_PASS: ${{ secrets.PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -z "${{ secrets.KEYSTORE }}" ] \
-             || [ -z "${{ secrets.ALIAS }}" ] \
-             || [ -z "${{ secrets.ALIAS_PASSWORD }}" ] \
-             || [ -z "${{ secrets.PASSWORD }}" ]; then
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KS_ALIAS" ] \
+             || [ -z "$KS_ALIAS_PASS" ] || [ -z "$KS_STORE_PASS" ]; then
             echo "::error::Release signing secrets (KEYSTORE/ALIAS/ALIAS_PASSWORD/PASSWORD) must all be configured."
             exit 1
           fi
           # Real release keystore from repository secrets (BASE64-encoded).
           mkdir -p release
-          echo "${{ secrets.KEYSTORE }}" | base64 -d > release/so-reverse-mcp-release.jks
-          echo "Restored release signing keystore from secrets."
+          printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > release/so-reverse-mcp-release.jks
+          if ! keytool -list -keystore release/so-reverse-mcp-release.jks \
+               -storepass "$KS_STORE_PASS" -alias "$KS_ALIAS" >/dev/null 2>&1; then
+            echo "::error::KEYSTORE 解码后校验失败：base64 不完整/被截断，或 ALIAS/PASSWORD 与密钥库不匹配。"
+            echo "::error::KEYSTORE 字符数（去空白后）: $(printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | wc -c)"
+            exit 1
+          fi
+          echo "Restored and verified release signing keystore from secrets."
 
       - name: Build release APKs
         env:
