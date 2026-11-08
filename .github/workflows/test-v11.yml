@@ -11,12 +11,44 @@ on:
   # pr-auto-review.yml 在合并后 dispatch 补触发；PR 阶段由
   # pull_request 覆盖，本入口只服务 main。
   workflow_dispatch:
+# ---------------------------------------------------------------------------
+# Toolchain versions live here and nowhere else in this file.
+#
+# The three build workflows (build.yml / release.yml / test-v11.yml) must agree
+# on every one of these: a checks run that compiles with a different NDK, cmake
+# or Gradle than the release does cannot prove the release is buildable. Keep
+# the block byte-identical across the three files; `docs/17.构建与CI.md` records
+# the canonical values and why each is pinned.
+# ---------------------------------------------------------------------------
+env:
+  # JDK for AGP/Gradle. 17 is what AGP 8.x requires; do not drift to 21.
+  SOMCP_JAVA_VERSION: "17"
+  # Must match gradle/wrapper/gradle-wrapper.properties (the repo ships the
+  # properties file but no gradlew launcher, so the version is provisioned by
+  # the action and has to be stated here too).
+  SOMCP_GRADLE_VERSION: "9.6.1"
+  # Android SDK levels. The NDK string is the exact sdkmanager package name and
+  # is also hard-pinned by tools/blutter-matrix/matrix-config.json.
+  SOMCP_ANDROID_PLATFORM: "platforms;android-36"
+  SOMCP_BUILD_TOOLS: "build-tools;36.0.0"
+  SOMCP_NDK: "ndk;29.0.14206865"
+  # cmake;3.22.1 is NOT optional: the runner image ships CMake 4.x, which turns
+  # `cmake_minimum_required(VERSION <3.5)` and `cmake_policy(SET CMPxxxx OLD)`
+  # into hard errors, and the pinned third_party trees still declare both.
+  SOMCP_CMAKE: "cmake;3.22.1"
+
 permissions:
   contents: read
 
 jobs:
   checks:
     runs-on: ubuntu-latest
+    # A full cold run is ~65 min (measured on release.yml: Rizin+LIEF 36 min,
+    # rz-ghidra 15 min, Unidbg 5 min, builds 8 min) plus lint/unit-test work
+    # that release.yml does not do. The default 360 min is far too generous for
+    # a pull-request gate and a wedged native build would hold a runner for six
+    # hours; 150 min leaves ~2x headroom over the measured cold path.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,10 +66,23 @@ jobs:
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: ${{ env.SOMCP_JAVA_VERSION }}
+      # gradle/actions/setup-gradle downloads the distribution from
+      # services.gradle.org, which occasionally answers 504 during a partial
+      # outage. The action retries twice on its own (~35s) and then fails the
+      # whole job before a single step of ours runs. Retry the step itself so a
+      # transient upstream hiccup cannot burn a full pipeline.
       - uses: gradle/actions/setup-gradle@v4
+        id: setup-gradle
+        continue-on-error: true
         with:
-          gradle-version: "9.6.1"
+          gradle-version: ${{ env.SOMCP_GRADLE_VERSION }}
+          cache-disabled: true
+      - name: Retry Gradle provisioning on transient failure
+        if: steps.setup-gradle.outcome == 'failure'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.SOMCP_GRADLE_VERSION }}
           cache-disabled: true
       - uses: android-actions/setup-android@v3
         with:
@@ -45,7 +90,15 @@ jobs:
           # removed the legacy `tools` package from the SDK repository, so keep
           # platform-tools only.
           packages: platform-tools
-      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+      # cmake;3.22.1 is not optional: the runner image ships CMake 4.x, and
+      # the pinned legacy native trees (capstone 4.0.2, keystone with its
+      # bundled LLVM) still call cmake_policy(SET CMP0051 OLD), which 4.x
+      # rejects outright ("Policy CMP0051 may not be set to OLD behavior").
+      # build.yml and release.yml always installed this; test-v11 did not,
+      # so its Unidbg step fell back to the system cmake and died. The
+      # scripts also normalise those CMakeLists themselves now, so this is
+      # the first line of defence rather than the only one.
+      - run: sdkmanager "$SOMCP_ANDROID_PLATFORM" "$SOMCP_BUILD_TOOLS" "$SOMCP_NDK" "$SOMCP_CMAKE"
 
       - name: Determine base revision
         id: base-rev
@@ -65,6 +118,14 @@ jobs:
           fi
           echo "Changed files:"
           echo "$changed_files"
+      - name: Workflow toolchain version consistency
+        # A checks run that compiles with a different JDK/Gradle/NDK/cmake than
+        # the release does cannot prove the release is buildable — that is how
+        # test-v11 stayed green while the release APK was the only one carrying
+        # Unidbg and rz-ghidra natives. Each workflow declares its versions once
+        # in a top-level env block; this step fails on a hard-coded copy or on
+        # two workflows disagreeing.
+        run: python3 tools/check-workflow-versions.py
       - name: Profanity check
         run: |
           BASE="${{ steps.base-rev.outputs.base }}"

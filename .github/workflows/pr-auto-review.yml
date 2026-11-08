@@ -216,7 +216,7 @@ jobs:
           head -c 250000 /tmp/pr.diff > /tmp/pr.diff.trunc
           echo "diff_bytes=$(wc -c < /tmp/pr.diff.trunc)" >> "$GITHUB_OUTPUT"
 
-      # Waits for the PR's own CI (test-v7.yml) to finish on the head
+      # Waits for the PR's own CI (test-v11.yml) to finish on the head
       # commit, then captures the check-run conclusions so the LLM review can
       # factor CI results into its verdict. Without this, the review is based
       # only on static code reading and ignores CI failures.
@@ -275,7 +275,7 @@ jobs:
                                              or (.name == $self_job))));
             def is_ext: is_self | not;'
 
-          # CI is only configured for the main branch (test-v7.yml); PRs
+          # CI is only configured for the main branch (test-v11.yml); PRs
           # targeting other branches have no CI to wait on.
           if [ "${BASE_REF:-}" != "main" ]; then
             echo "::notice::PR targets $BASE_REF (CI only runs on main); skipping CI wait."
@@ -924,10 +924,14 @@ jobs:
                   // 不会跑，界面上也不会出现红灯——因为压根没有 run。这里显式
                   // 补触发一遍；被触发的每个工作流都必须自己声明
                   // `on.workflow_dispatch`。
+                  // Only the workflows that actually exist and can run
+                  // unattended: build.yml (APK) and test-v11.yml (the checks
+                  // gate). test.yml / test-v2..v10 are dead dispatcher-only
+                  // leftovers; re-dispatching them produced no signal and
+                  // buried the real run in the Actions list.
                   const pushTriggered = [
                     'build.yml',
-                    'test.yml', 'test-v2.yml', 'test-v3.yml', 'test-v4.yml',
-                    'test-v5.yml', 'test-v6.yml', 'test-v7.yml', 'test-v8.yml',
+                    'test-v11.yml',
                   ];
                   for (const wf of pushTriggered) {
                     try {

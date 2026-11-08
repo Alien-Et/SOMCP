@@ -13,6 +13,32 @@ on:
         required: false
         default: ''
 
+# ---------------------------------------------------------------------------
+# Toolchain versions live here and nowhere else in this file.
+#
+# The three build workflows (build.yml / release.yml / test-v11.yml) must agree
+# on every one of these: a checks run that compiles with a different NDK, cmake
+# or Gradle than the release does cannot prove the release is buildable. Keep
+# the block byte-identical across the three files; `docs/17.构建与CI.md` records
+# the canonical values and why each is pinned.
+# ---------------------------------------------------------------------------
+env:
+  # JDK for AGP/Gradle. 17 is what AGP 8.x requires; do not drift to 21.
+  SOMCP_JAVA_VERSION: "17"
+  # Must match gradle/wrapper/gradle-wrapper.properties (the repo ships the
+  # properties file but no gradlew launcher, so the version is provisioned by
+  # the action and has to be stated here too).
+  SOMCP_GRADLE_VERSION: "9.6.1"
+  # Android SDK levels. The NDK string is the exact sdkmanager package name and
+  # is also hard-pinned by tools/blutter-matrix/matrix-config.json.
+  SOMCP_ANDROID_PLATFORM: "platforms;android-36"
+  SOMCP_BUILD_TOOLS: "build-tools;36.0.0"
+  SOMCP_NDK: "ndk;29.0.14206865"
+  # cmake;3.22.1 is NOT optional: the runner image ships CMake 4.x, which turns
+  # `cmake_minimum_required(VERSION <3.5)` and `cmake_policy(SET CMPxxxx OLD)`
+  # into hard errors, and the pinned third_party trees still declare both.
+  SOMCP_CMAKE: "cmake;3.22.1"
+
 # Concurrent tag pushes to the same tag would build the same release twice;
 # serialize by tag so we never build the same release more than once.
 concurrency:
@@ -25,6 +51,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Measured cold run: 64 min (Rizin+LIEF 36 min, rz-ghidra 15 min, Unidbg
+    # 5 min, release APKs 4 min). A warm cache shaves ~40 min off that. 150 min
+    # keeps ~2x headroom while still bounding a wedged native build.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,10 +72,20 @@ jobs:
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: ${{ env.SOMCP_JAVA_VERSION }}
+      # services.gradle.org intermittently answers 504; the action retries twice
+      # (~35s) and then fails the job. Retry the step so a transient upstream
+      # outage cannot discard the whole release pipeline.
       - uses: gradle/actions/setup-gradle@v4
+        id: setup-gradle
+        continue-on-error: true
         with:
-          gradle-version: "9.6.1"
+          gradle-version: ${{ env.SOMCP_GRADLE_VERSION }}
+      - name: Retry Gradle provisioning on transient failure
+        if: steps.setup-gradle.outcome == 'failure'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.SOMCP_GRADLE_VERSION }}
       - uses: android-actions/setup-android@v3
         with:
           # The action's default packages are "tools platform-tools". Google has
@@ -53,7 +93,7 @@ jobs:
           # platform-tools only.
           packages: platform-tools
       # cmake;3.22.1 必需：系统 cmake 4.x 拒绝 third_party/* 的老 CMake 策略（CMP0048 OLD / VERSION 2.6）
-      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865" "cmake;3.22.1"
+      - run: sdkmanager "$SOMCP_ANDROID_PLATFORM" "$SOMCP_BUILD_TOOLS" "$SOMCP_NDK" "$SOMCP_CMAKE"
 
       - name: Install native build tools
         run: |

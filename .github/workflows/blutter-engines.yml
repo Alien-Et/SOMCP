@@ -33,6 +33,16 @@ on:
         type: boolean
         default: false
 
+# ---------------------------------------------------------------------------
+# Toolchain versions. This workflow never builds an APK (no JDK/Gradle/SDK
+# platforms), so it carries only the NDK pin — but that pin must equal the
+# SOMCP_NDK of build.yml / release.yml / test-v11.yml: the runners it produces
+# are dlopen'd by an APK built with that NDK. tools/blutter-matrix/
+# matrix-config.json hard-pins the same string.
+# ---------------------------------------------------------------------------
+env:
+  SOMCP_NDK: "ndk;29.0.14206865"
+
 permissions:
   contents: write
 
@@ -78,7 +88,7 @@ jobs:
       # tools/blutter-matrix/matrix-config.json); setup-android does not install
       # an NDK by default, and build-blutter-runners.sh hard-fails without it.
       - name: Install Android NDK
-        run: sdkmanager "ndk;29.0.14206865"
+        run: sdkmanager "$SOMCP_NDK"
 
       - name: Install native build tools
         run: |
@@ -138,7 +148,7 @@ jobs:
               print(f"| {engine['dartVersion']} | `{engine['file']}` | {engine['sizeBytes']/1048576:.1f} MB |")
           PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: blutter-engines
           path: dist/blutter-engines/**
