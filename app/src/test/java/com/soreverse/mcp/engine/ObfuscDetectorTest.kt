@@ -39,22 +39,44 @@ class ObfuscDetectorTest {
         .put("edges", JSONArray())
 
     /**
-     * A control-flow-flattened function: every real block jumps back into one
-     * thin dispatcher, and several of those blocks are themselves thin bogus
-     * blocks that do no work.
+     * A control-flow-flattened function: nearly every real block jumps back
+     * into one thin dispatcher, so that dispatcher collects most of the
+     * function's edges.
      */
-    private fun flattenedCfg() = cfg(
-        block(0x10, 2, 0x50, noTarget),
-        block(0x11, 2, 0x50, noTarget),
-        block(0x20, 4, 0x50, noTarget),
-        block(0x30, 2, 0x50, noTarget),
-        block(0x31, 2, 0x50, noTarget),
-        block(0x40, 4, 0x50, noTarget),
-        block(0x50, 3, 0x20, 0x60),
-        block(0x60, 4, 0x50, noTarget),
-        block(0x61, 2, 0x50, noTarget),
-        block(0x70, 3, 0x50, noTarget)
-    )
+    private fun flattenedCfg(): JSONObject {
+        // 24 blocks: 20 real ones all pointing at the dispatcher, which owns
+        // two successors. Half of the real blocks are thin bogus blocks, which
+        // is what bogus-control-flow splitting produces.
+        val blocks = ArrayList<JSONObject>()
+        for (i in 0 until 20) {
+            val ninstr = if (i % 2 == 0) 2 else 5
+            blocks.add(block(0x100L + i * 0x10, ninstr, 0x900, noTarget))
+        }
+        blocks.add(block(0x900, 4, 0x200, 0xA00))
+        blocks.add(block(0xA00, 4, 0x900, noTarget))
+        blocks.add(block(0xA10, 4, 0x900, noTarget))
+        blocks.add(block(0xA20, 2, 0x900, noTarget))
+        return cfg(*blocks.toTypedArray())
+    }
+
+    /**
+     * Ordinary C++ that happens to have a popular shared tail: several blocks
+     * branch to one cleanup block, but it is nowhere near the graph's hub. This
+     * is what libc++ template code looks like and it must stay clean.
+     */
+    private fun sharedTailCfg(): JSONObject {
+        val blocks = ArrayList<JSONObject>()
+        // 40 straight-line blocks, each falling through to the next.
+        for (i in 0 until 40) {
+            blocks.add(block(0x100L + i * 0x10, 4, 0x100L + (i + 1) * 0x10, noTarget))
+        }
+        // Four error paths converging on one cleanup block.
+        for (i in 0 until 4) {
+            blocks.add(block(0x400L + i * 0x10, 4, 0x900, noTarget))
+        }
+        blocks.add(block(0x900, 4, noTarget, noTarget))
+        return cfg(*blocks.toTypedArray())
+    }
 
     /** An ordinary diamond plus straight-line blocks: no central dispatcher. */
     private fun plainCfg() = cfg(
@@ -84,6 +106,18 @@ class ObfuscDetectorTest {
         val r = ObfuscDetector.analyzeFunction(plainCfg())
         assertEquals("clean", r.getString("verdict"))
         assertEquals(0, r.getInt("dispatcherBlocks"))
+    }
+
+    /**
+     * Regression guard: libc++ template code shares error tails, which a bare
+     * fan-in test misreads as flattening. A cleanup block reached by a handful
+     * of blocks out of forty-odd is not a dispatcher.
+     */
+    @Test
+    fun doesNotFlagSharedCleanupTail() {
+        val r = ObfuscDetector.analyzeFunction(sharedTailCfg())
+        assertEquals(0, r.getInt("dispatcherBlocks"))
+        assertEquals("clean", r.getString("verdict"))
     }
 
     @Test

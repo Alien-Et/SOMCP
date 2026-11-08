@@ -198,9 +198,11 @@ class ElfAuditTest {
     fun androidIdentDecodesSdkNdkAndBuild() {
         val ident = NativeProfile.androidIdent(data, elf)
         assertTrue(ident.getBoolean("found"))
+        // Real AOSP layout: u32 api_level, then two 64-byte NUL-padded strings.
         assertEquals(29L, ident.getLong("sdkVersion"))
-        assertEquals("27.1.855", ident.getString("ndkVersionHuman"))
-        assertEquals("b1", ident.getString("buildNumber"))
+        assertEquals("r26d", ident.getString("ndkVersion"))
+        assertEquals("10580896", ident.getString("buildNumber"))
+        assertEquals(132, ident.getInt("descSize"))
     }
 
     @Test

@@ -37,8 +37,10 @@ internal fun EngineRuntime.rzFunctions(
             "Rizin native backend not loaded for this ABI"
         )
     }
-    val result = NativeEngine.active().functions(bytes, elf.architecture)
-    val arr = runCatching { JSONArray(result) }.getOrNull()
+    val raw: String? = runCatching {
+        NativeEngine.active().functions(bytes, elf.architecture)
+    }.getOrNull()
+    val arr = runCatching { JSONArray(raw ?: "") }.getOrNull()
     if (arr != null && arr.length() > 0) {
         val wsName = touchWorkspace(workspaceId)?.source?.name ?: "lib.so"
         val list = (0 until arr.length()).map {
@@ -87,10 +89,10 @@ internal fun EngineRuntime.rzFunctions(
                 0
             ).put("kind", functionKind(elf, it)).put("source", "lief-dynsym-fallback")
         }
-    val warning = if (arr ==
-        null
-    ) {
-        "Rizin function JSON could not be parsed; using LIEF exported FUNC symbols as fallback."
+    val warning = if (arr == null) {
+        val n = raw?.length ?: -1
+        val head = raw?.take(120)?.replace("\n", "\\n") ?: "<null native payload>"
+        "Rizin function JSON could not be parsed (nativePayloadChars=$n, head=$head); using LIEF exported FUNC symbols as fallback."
     } else {
         "Rizin returned no functions; using LIEF exported FUNC symbols as fallback."
     }
@@ -472,7 +474,7 @@ private fun EngineRuntime.aarch64GotBlrXrefs(bytes: ByteArray, elf: ElfFile, got
     return found
 }
 
-internal fun EngineRuntime.rzSearchBytes(workspaceId: String, editSessionId: String, pattern: String, fromVa: Long = 0, toVa: Long = 0): JSONObject = guarded {
+internal fun EngineRuntime.rzSearchBytes(workspaceId: String, editSessionId: String, pattern: String, fromVa: Long = 0, toVa: Long = 0, limit: Int = 50): JSONObject = guarded {
     val bytes = dataFor(workspaceId, editSessionId)
     val elf = elfFor(workspaceId, editSessionId)
     if (!NativeEngine.active().available()) {
@@ -487,7 +489,19 @@ internal fun EngineRuntime.rzSearchBytes(workspaceId: String, editSessionId: Str
     ).put("workspaceId", workspaceId).put("pattern", pattern).put("architecture", elf.architecture)
     val nativeHits = payload.optJSONArray("hits") ?: JSONArray()
     enrichRizinSearchHits(elf, nativeHits)
-    if (nativeHits.length() > 0) return@guarded ok(payload.put("backend", "rizin"))
+    // 【修复】旧实现原样返回 native 的全部命中，调用方传的 limit 完全不生效
+    // （一次 FD7B03A9 搜索传 limit=3 返回 90 条）。在这里统一截断，并在
+    // totalHits 里保留真实命中数。
+    if (limit in 1 until nativeHits.length()) {
+        val capped = JSONArray()
+        for (i in 0 until limit) capped.put(nativeHits.get(i))
+        payload.put("hits", capped)
+            .put("totalHits", nativeHits.length())
+            .put("truncated", true)
+    }
+    if (payload.optJSONArray("hits")?.length() ?: 0 > 0) {
+        return@guarded ok(payload.put("backend", "rizin"))
+    }
     if (!payload.has("error")) return@guarded ok(payload.put("backend", "rizin"))
     val fallbackHits = fallbackByteSearch(bytes, elf, pattern, fromVa, toVa)
     if (payload.has("error") &&
@@ -501,9 +515,16 @@ internal fun EngineRuntime.rzSearchBytes(workspaceId: String, editSessionId: Str
             "payload" to payload
         )
     }
+    val cappedFallback = if (limit in 1 until fallbackHits.length()) {
+        val capped = JSONArray()
+        for (i in 0 until limit) capped.put(fallbackHits.get(i))
+        capped
+    } else fallbackHits
     ok(
         JSONObject()
-            .put("hits", fallbackHits)
+            .put("hits", cappedFallback)
+            .put("totalHits", fallbackHits.length())
+            .put("truncated", cappedFallback.length() < fallbackHits.length())
             .put("workspaceId", workspaceId)
             .put("pattern", pattern)
             .put("architecture", elf.architecture)

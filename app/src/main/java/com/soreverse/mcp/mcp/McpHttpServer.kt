@@ -27,9 +27,11 @@ import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.ToolStats
 import com.soreverse.mcp.core.bool
 import com.soreverse.mcp.core.err
+import com.soreverse.mcp.core.intValue
 import com.soreverse.mcp.core.obj
 import com.soreverse.mcp.core.ok
 import com.soreverse.mcp.core.str
+import com.soreverse.mcp.engine.REPORT_SAMPLE_LIMIT
 import com.soreverse.mcp.nativecore.NativeEngine
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -783,7 +785,9 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                 ).analysisReport(
                     args.str("workspaceId"),
                     args.str("editSessionId"),
-                    args.bool("writeToFile", true)
+                    args.bool("writeToFile", true),
+                    args.bool("compact", true),
+                    args.intValue("sampleLimit", REPORT_SAMPLE_LIMIT)
                 )
             },
             capabilitiesHook = { ok(EngineProvider.get(context).capabilityRegistry()) },
@@ -853,17 +857,29 @@ class McpHttpServer(private val context: Context, private val port: Int, private
         val settings = SettingsStore(context)
         val payloadText = payload.toString().replace("\\/", "/")
         val cap = settings.toolResultMaxChars
+        val isError = payload.optBoolean("ok", true).not()
         val rendered = if (cap > 0 && payloadText.length > cap) {
-            err("RESULT_TRUNCATED", "Tool result exceeded configured character limit", "limit", cap)
+            // A capped result is still a successful call: reporting it through
+            // `err(...)` used to flip ok=true into ok=false, so a caller that
+            // only checked `ok` saw a perfectly good analysis_report as failed.
+            // The envelope keeps the real status and carries the cut prefix.
+            JSONObject()
+                .put("ok", payload.optBoolean("ok", true))
                 .put("truncated", true)
                 .put("originalLength", payloadText.length)
+                .put("limit", cap)
                 .put("preview", payloadText.substring(0, cap))
+                .put(
+                    "hint",
+                    "Result exceeded toolResultMaxChars ($cap). Narrow the request " +
+                        "(prefix/limit/cursor/detail) or raise the limit in Settings > Engine."
+                )
                 .toString()
         } else {
             payloadText
         }
         return JSONObject()
-            .put("isError", payload.optBoolean("ok", true).not())
+            .put("isError", isError)
             .put("content", JSONArray().put(JSONObject().put("type", "text").put("text", rendered)))
     }
 

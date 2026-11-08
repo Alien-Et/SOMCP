@@ -24,6 +24,7 @@ import com.soreverse.mcp.core.intValue
 import com.soreverse.mcp.core.ok
 import com.soreverse.mcp.core.str
 import com.soreverse.mcp.core.toJsonArray
+import com.soreverse.mcp.engine.REPORT_SAMPLE_LIMIT
 import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
@@ -339,6 +340,9 @@ object ToolCatalog {
                     "workspaceId" str "Workspace ID"
                     "editSessionId" str "Edit session ID"
                     "writeToFile" bool "Write report JSON to app files"
+                    "compact" bool
+                        "Default true: keeps every key but samples dynsyms/imports/relocations/strings/functions to sampleLimit entries each, with real totals under `totals`. Pass false for the complete report."
+                    "sampleLimit" int "Entries kept per bulky array when compact (default 20, max 5000)"
                 }
             )
         }
@@ -346,7 +350,9 @@ object ToolCatalog {
         e.analysisReport(
             a.str("workspaceId"),
             a.str("editSessionId"),
-            a.optBoolean("writeToFile", true)
+            a.optBoolean("writeToFile", true),
+            a.optBoolean("compact", true),
+            a.intValue("sampleLimit", REPORT_SAMPLE_LIMIT)
         )
     }
 
@@ -538,16 +544,18 @@ object ToolCatalog {
                         "Rizin byte pattern: compact hex such as 5F2403D5, nibble wildcard using . such as 5F24..D5, optional bytes:mask; spaced hex and ?? are normalized for compatibility"
                     "fromVa" str "Start VA hex string (blank/0 = from beginning)"
                     "toVa" str "End VA hex string (blank/0 = to end)"
+                    "limit" int "Max hits returned (default 50, max 200)"
                 }
             )
         }
-    ) { e, a, _ ->
+    ) { e, a, s ->
         e.rzSearchBytes(
             a.str("workspaceId"),
             a.str("editSessionId"),
             a.str("pattern"),
             HexCodec.long(a.str("fromVa")) ?: 0L,
-            HexCodec.long(a.str("toVa")) ?: 0L
+            HexCodec.long(a.str("toVa")) ?: 0L,
+            a.intValue("limit", 50).coerceIn(1, 200)
         )
     }
 
@@ -772,10 +780,34 @@ object ToolCatalog {
             )
         }
     ) { e, a, _ ->
+        val locator = a.str("locator")
+        if (locator.isBlank()) {
+            // The edits[] items carry their own per-item options, and a caller
+            // that copies the schema's editsAsmSchema() often puts `locator`
+            // inside an item where it is silently ignored — the real failure
+            // then surfaces as "function '' could not be resolved", which names
+            // nothing. Name the missing field and the mistake here instead.
+            val strayLocator = a.optJSONArray("edits")
+                ?.let { arr ->
+                    (0 until arr.length())
+                        .mapNotNull { arr.optJSONObject(it) }
+                        .firstOrNull { it.has("locator") }
+                        ?.optString("locator")
+                        ?.takeIf { it.isNotBlank() }
+                }
+            val message = if (strayLocator != null) {
+                "`locator` is a top-level argument, not an edits[] item field. " +
+                    "Move \"$strayLocator\" from edits[i].locator up to the call's `locator`."
+            } else {
+                "`locator` is required: pass a function locator " +
+                    "(so_function:<file>!<name>@0x<va>), a symbol name, or a bare 0x<va>."
+            }
+            return@EngineToolHandler err("MISSING_ARGUMENT", message, "locator", locator)
+        }
         e.editAsm(
             a.str("workspaceId"),
             a.str("editSessionId"),
-            a.str("locator"),
+            locator,
             a.optJSONArray("edits") ?: return@EngineToolHandler err(
                 "INVALID_ARGUMENT",
                 "edits[] is required for this mode (see the tool schema)",
@@ -1120,7 +1152,8 @@ object ToolCatalog {
                 a.str("editSessionId"),
                 a.str("pattern"),
                 HexCodec.long(a.str("fromVa")) ?: 0L,
-                HexCodec.long(a.str("toVa")) ?: 0L
+                HexCodec.long(a.str("toVa")) ?: 0L,
+                a.intValue("limit", 50).coerceIn(1, 200)
             )
 
             "crypto" -> e.rzScanCrypto(a.str("workspaceId"), a.str("editSessionId"))
@@ -1329,7 +1362,9 @@ object ToolCatalog {
             "report" -> e.analysisReport(
                 a.str("workspaceId"),
                 a.str("editSessionId"),
-                a.optBoolean("writeToFile", true)
+                a.optBoolean("writeToFile", true),
+                a.optBoolean("compact", true),
+                a.intValue("sampleLimit", REPORT_SAMPLE_LIMIT)
             )
 
             else -> err("UNKNOWN_ACTION", "Unknown LIEF action", "action", a.str("action"))
@@ -2563,6 +2598,9 @@ object ToolCatalog {
                     "editSessionId" str "Edit session ID (suggest/report)"
                     "format".oneOf("Report format", "json")
                     "writeToFile" bool "Write report JSON to app files (report)"
+                    "compact" bool
+                        "Report: default true samples the bulky arrays (real totals under `totals`); false returns everything"
+                    "sampleLimit" int "Report: entries kept per bulky array when compact (default 20)"
                     "reset" bool "Reset stats (stats)"
                 }
             )

@@ -256,7 +256,7 @@ internal fun EngineRuntime.patchLengthGuard(args: JSONObject): JSONObject {
     val newHex = args.str("newHex").ifBlank { args.str("hex").ifBlank { args.str("bytes") } }
     val patch = HexCodec.bytes(newHex)
         ?: return err("INVALID_HEX", "newHex must contain valid hex byte pairs", "newHex", newHex.take(64))
-    val byteLength = args.optInt("byteLength", 0)
+    val byteLength = parseOffsetField(args.opt("byteLength")) ?: 0
     if (byteLength <= 0) {
         return err("INVALID_ARGUMENT", "byteLength must be a positive instruction-slot size", "byteLength", byteLength)
     }

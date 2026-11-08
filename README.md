@@ -25,7 +25,7 @@ LIEF 重写与修复、补丁会话、构建导出、Flutter AOT 分析、JNI �
 | 项 | 值 |
 | --- | --- |
 | 包名 | `com.soreverse.mcp` |
-| 版本 | `1.0.29`（`versionCode` 30） |
+| 版本 | `1.0.33`（`versionCode` 34） |
 | 最低系统 | Android 8.0 / API 26 |
 | 目标 SDK | 36 |
 | 默认端口 | `8000` |
@@ -587,6 +587,21 @@ bash build-native-android.sh
 | 低 | `patch_apply_verify` | 自检详情自相矛盾：`status: preserved` 配 `detail: "reloc (offset,type) sets differ"` | detail 按实际分支生成 |
 
 同轮记录 4 项待处理（未改）：`obfusc_api` 在非混淆库上大面积误报（非混淆库被判 33/40 函数「已扁平化」且 `confidence: high`，判中的全是 libc++ 模板自身的分支结构）、`analyze_functions` 在 Rizin JSON 解析失败时静默降级为 LIEF 符号、参数错误提示不点名缺失字段、多个工具响应体无上限（实测 `analysis_report` 1.7 MB / `workspace_export` 1.1 MB 内联返回，而 `toolResultMaxChars` 默认为 0）。
+
+**第九轮：1.0.30–1.0.33 把上轮遗留全部清零（2026-11-08）**
+
+| 版本 | 严重度 | 工具 | 问题 | 修法 |
+| --- | --- | --- | --- | --- |
+| 1.0.30 | 高 | `analyze_functions` | 函数数超过约 400 时永久降级 `lief-dynsym-fallback`（`calls` 全 0），而 `rizin_api(analyze)` 明确报 `functions: 1390` | `rizin_core.cpp` 的 `rzFunctions` 用固定 `char b[512]` 逐函数 `snprintf`，长名截断后整份 JSON 非法 → 改 `std::string` 动态拼接；`escJson` 补 UTF-8 校验（非法字节会毒死 `NewStringUTF`） |
+| 1.0.31 | 中 | `analyze_outline` | `entry0` 真实起点 `0x41a60`，工具报 `0x268896` | `optString` 把 JSON number `268896` 变成字符串再按十六进制解析 → 优先 `optLong` 按数值读 |
+| 1.0.31 | 中 | `search_bytes` | 传 `limit: 3` 返回 90 条 | schema/handler/native 三层都没有该参数 → 补全并在两条路径截断 + 回传 `totalHits`/`truncated` |
+| 1.0.31 | 中 | `antidebug_api` | `pthread_cond_signal` 被判「信号处理器自检」、`dl_iterate_phdr` 被判「动态加载」 | 子串匹配改精确相等，规则表去掉裸 `"signal"` |
+| 1.0.32 | 中 | `edit_hex`/`edit_asm`/`patch_length_guard` | 按 schema 传 `"0x4a0"` 报 `Missing byteOffset` | `optInt` 不解析字符串也不认 `0x` → 新增 `parseOffsetField()`，9 处读取全改 |
+| 1.0.33 | 中 | `obfusc_api` | 非混淆库 `overall: "flattened"`、6 函数 `confidence: high` | fan-in 阈值相对化（≥ 平均入度 3 倍 **且** ≥ 总边数 25%）→ 复测全 `clean` |
+| 1.0.33 | 中 | `edit_asm`/`read_disasm` | 参数错误不点名缺失字段 | 提前检出「locator 写进 edits[]」并说明怎么改；节区 locator 报 `INVALID_LOCATOR_KIND` + `acceptedForms` |
+| 1.0.33 | 中 | `analysis_report` | 单次响应 1,728,075 字符 | 新增 `compact`（默认 true）/`sampleLimit`，保持数组形状只截条目 + `totals`/`truncation` → 35,042 字符（缩小 49 倍）；`wrapToolResult` 截断不再把 `ok:true` 翻成 `ok:false`；全局默认上限 0 → 600,000 |
+
+同轮顺带修好 3 个失效单测（测试侧，源码无改动）：`SubAgentRolesTest` 是孤儿文件（被测源码已随 AI 工具移除），删除；`ToolCatalogLeanTest` 3 个断言仍指着 `agent_api`，改为断言通用 gateway 规则 + 显式钉住「已移除」；`StringDecryptorTest` 的「密文」夹具跨度只有 `0x2F`，不满足 `spansByteSpace` 的 `≥ 0x80`，换成真密文形态。另修 `ElfAuditTest` 的 note 夹具（12 字节 desc → AOSP 真实的 132 字节布局）。**`testDebugUnitTest` 172 项全绿**（修前因编译失败一项都跑不了）。
 
 **第七轮：用某 Flutter 应用做真实样本回归，`str_literal_classes` 三类新误报清零（2026-11-08）**
 

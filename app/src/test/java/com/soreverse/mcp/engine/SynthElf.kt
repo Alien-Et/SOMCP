@@ -44,14 +44,24 @@ internal object SynthElf {
         val rela = concat(le64(0x2000), le64(1027), le64(0))
         val dynstrOffset = 64 + 3 * 56 + dynsym.size
         val dynamic = dynamicTable(dynstr.size, dynstrOffset)
-        val note = concat(
-            le32(8),
-            le32(12),
-            le32(1),
-            "Android\u0000".toByteArray(Charsets.ISO_8859_1),
+        // .note.android.ident with the real AOSP desc layout:
+        //   { u32 api_level; char ndk_version[64]; char build_number[64] } = 132 bytes.
+        // The old fixture used a 12-byte desc that packed the NDK version into a
+        // u32, which is not what a real NDK build emits and hid the field reader.
+        val ndkVersion = "r26d\u0000".toByteArray(Charsets.ISO_8859_1)
+        val buildNumber = "10580896\u0000".toByteArray(Charsets.ISO_8859_1)
+        val noteDesc = concat(
             le32(29),
-            le32(((27L shl 25) or (1L shl 14) or 855L).toInt()),
-            "b1\u0000\u0000".toByteArray(Charsets.ISO_8859_1)
+            ndkVersion.copyOf(64),
+            buildNumber.copyOf(64)
+        )
+        val noteName = "Android\u0000".toByteArray(Charsets.ISO_8859_1)
+        val note = concat(
+            le32(noteName.size),
+            le32(noteDesc.size),
+            le32(1),
+            noteName,
+            noteDesc
         )
         val rodata = concat(
             "https://example.com/path\u000010.0.0.1:8080\u0000/proc/self/maps\u0000ro.build.version.sdk\u0000".toByteArray(Charsets.ISO_8859_1),

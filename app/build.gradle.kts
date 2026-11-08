@@ -43,8 +43,8 @@ android {
         applicationId = "com.soreverse.mcp"
         minSdk = 26
         targetSdk = 36
-        versionCode = 30
-        versionName = "1.0.29"
+        versionCode = 34
+        versionName = "1.0.33"
 
         externalNativeBuild {
             cmake {

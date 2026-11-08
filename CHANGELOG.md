@@ -2,6 +2,33 @@
 
 # 更新日志
 
+## 1.0.33
+- **修掉 1.0.29 记录的 3 项遗留问题**（同一真实大样本上复测通过）。
+  - **`obfusc_api` 在非混淆库上大面积误报（中）**。判据只有「dispatcher fan-in ≥ 3 + 薄块比」，而普通 C++ 天然会制造共享尾部（错误汇聚、`operator delete` 尾声、异常清理），于是 libc++ 模板代码被判成 `flattened`/`confidence: high`，与 `workspace_overview` 的 `ollvm: false` 直接矛盾。实测一个 587 块的非混淆函数被判出 **49 个 dispatcher**（平均入度 1.63），完全不是「枢纽」。修法：dispatcher 必须**同时**满足「入度 ≥ 函数平均入度的 3 倍」和「入度 ≥ 函数总边数的 25%」—— 真正的 CFF 会把原 CFG 的每条边都换成 `state = K; goto dispatcher`，dispatcher 因此收走大部分边；共享尾部只收走一小撮。同一样本复测：`overall: clean`、`flattenedFunctions: 0`、`suspectedFunctions: 0`（原 6 flattened + 1 suspected），且 `dispatcherBlocks` 全部归 0。判据文案随响应下发（`method` 字段写明两个阈值），并补了 2 个回归单测（`doesNotFlagSharedCleanupTail` 守住误报、`detectsFlattenedControlFlow` 用真实星形拓扑守住漏报）。
+  - **参数错误不点名缺失字段（中）**。两处都改成能直接照着改的报错：① `edit_asm` 把 `locator` 写进 `edits[]` 时，旧版静默忽略然后报 `Function or address '' could not be resolved`；现在提前检出并返回 `MISSING_ARGUMENT`，消息直接说「`locator` 是顶层参数，把 "entry0" 从 edits[i].locator 移到顶层」。② `read_disasm` 收到节区/`zip_entry:`/`resource:` 这类 locator 时，旧版报 `FUNCTION_NOT_FOUND`（读作「这个函数不存在」）；现在返回 `INVALID_LOCATOR_KIND` + `detectedKind: "section"` + `acceptedForms` 全量清单。
+  - **响应体无上限（中）**。`analysis_report` 实测 1,728,075 字符（约 1.7 MB），全是 dynsyms 2103 条 + relocations 3146 条 + functions 1390 条的完整 dump，任何调用方都无法在一次对话里消费。修法：新增 `compact`（默认 `true`）与 `sampleLimit`（默认 20），**保持每个键与每个数组的形状**（调用方照旧迭代数组），只把 5 个体积大的数组截到 `sampleLimit` 条，真实规模写进新的 `totals`，截断说明写进新的 `truncation`；`compact=false` 仍返回完整报告，`writeToFile=true` 照旧落盘全量 JSON。实测同一报告 **1,728,075 → 35,042 字符（缩小 49 倍）**，`sections`/`stats`/`security`/`crypto`/`recommendations` 一字不少。顺带修 `McpHttpServer.wrapToolResult`：截断时旧实现走 `err(...)`，把 `ok:true` 翻成 `ok:false`，调用方只查 `ok` 就把一份好好的报告当成失败；现在保留真实 `ok`，只加 `truncated`/`originalLength`/`limit`/`preview`/`hint`。全局默认上限也从 `0`（不限）改为 600,000 字符。
+- **修掉 3 个失效单测**（测试侧问题，源码无改动）。① `SubAgentRolesTest` 是**孤儿文件**：它测的 `SubAgentRoles`/`SubAgentPolicy`/`SubAgentBudget` 已随 AI 工具（`agent_api` 等）在本项目魔改中整体移除，测试没跟着删，导致 `testDebugUnitTest` **整个编译不过**。已删除。② `ToolCatalogLeanTest` 的 3 个断言仍指着 `agent_api`；改为断言通用规则（每个 gateway 分类的工具都必须出现在 lean 列表、且不依赖 popularity 提升），并新增 `theRemovedSubAgentGatewayStaysRemoved` 显式钉住「已移除」这一事实，防止将来悄悄加回来。③ `StringDecryptorTest` 拿 `0x90..0xBF` 当密文，但这串跨度只有 `0x2F`，不满足 `spansByteSpace` 的 `≥ 0x80`，被扫描阶段正确过滤 —— 测试夹具本身造错了，换成跨度 `0x01..0xFF`、熵 4.0 的真密文形态。
+- **修好 `ElfAuditTest` 的 note 夹具**（测试侧）。旧夹具用 12 字节 desc 把 NDK 版本塞进一个 u32，这不是真实 NDK 产物的布局，反而掩盖了字段读取。改为 AOSP 真实布局（`u32 api_level` + `char ndk_version[64]` + `char build_number[64]` = 132 字节），断言 `sdkVersion: 29` / `ndkVersion: "r26d"` / `buildNumber: "10580896"` / `descSize: 132`。
+- **单测回归**：`testDebugUnitTest` **172 项全绿**（修前因编译失败一项都跑不了）。
+
+## 1.0.32
+- **`edit_hex` / `edit_asm` / `patch_length_guard` 的 offset 参数只认 JSON number，不认 schema 自己声明的 string（中）**。schema 里 `byteOffset` 标的是 `string`（注释还写着 `e.g. 0x978`），实现却用 `optInt` 读取 —— 它只解析 JSON number，字符串一律返回默认值，也从不解析 `0x` 前缀。于是照 schema 传 `"0x4a0"` 直接 `INVALID_ARGUMENT: Missing byteOffset (alias: offset) for hex edit at index 0`。`EngineRuntimeEditPatch.kt` 里同类读取共 8 处（`editHex` 的 `relOff`、`asmEditRange` 的 `address`/`instructionIndex`/`byteOffset` 三个分支），`EngineRuntimeAudit.kt` 的 `patchLengthGuard` 也有 1 处。
+  - 修法：新增 `parseOffsetField(value: Any?)`，同时接受 JSON number、十进制字符串、`0x` 十六进制字符串（负值与空串归 null），8 处读取全部改走它，原优先级语义保持不变（`byteLength` > `length` > `instructionCount` > `count`；`byteOffset` > `offset`）。
+  - 实测：`edit_hex(dryRun)` 的四种写法 `{"byteOffset":"0x4a0"}` / `{"byteOffset":"1184"}` / `{"offset":"0x4a0"}` / `{"byteOffset":1184}` 全部解析为同一个 `fileOffset: "0x41f00"`；`edit_asm` 的 `{"instructionIndex":"3"}` / `{"byteOffset":"0x10"}` / `{"byteLength":"8","byteOffset":"16"}` / `{"offset":"0x20"}` 四种写法地址与长度均正确；`patch_length_guard` 的 `"0x8"` 与 `8` 结果一致。
+  - 端到端复验：真实写入 → `session_history(snapshot)` → `patch_apply_verify(verdict: pass, changedBytes: 4, relocation_targets: "preserved (3146)")` → `session_audit(activePatchCount: 1)` → `session_history(undo)` → `build_so`（`size: 825896`、sha 与预期一致）。
+
+## 1.0.31
+- **`analyze_outline` 把十进制地址当十六进制解析，报出 6 倍偏移的假地址（中）**。`entry0` 的真实起始是 `0x41a60`，工具报 `startAddr: "0x268896"`。根因在 `EngineRuntimeRead.resolveOutlineTarget`：它用 `LocatorParser.hex(fn.optString("addr"))`，而 `optString` 会把 JSON number `268896` 转成字符串 `"268896"`，再被 `hex()` 按十六进制解析成 `0x268896` —— 这个值**看起来完全合法**，因此极难察觉。修法：优先按数值读（`optLong`），只有真正的字符串形态才走 `hex()`。实测修复后 `startAddr: "0x41a60"` / `endAddr: "0x41bc4"` / `size: 356`。
+- **`search_bytes` 的 `limit` 完全不生效（中）**。传 `limit: 3` 返回 90 条。根因是 schema 与 handler 都没有 `limit`，`rzSearchBytes` 也没有该参数，native 侧原样返回全部命中。修法：schema 补 `limit`（默认 50，上限 200）、`searchBytes` 与 `rizin_api(action=search_bytes)` 两个 handler 都传、`rzSearchBytes` 签名加 `limit` 并在 native 与 fallback 两条路径都截断，同时回传 `totalHits` 与 `truncated`。实测 `limit` 生效，`totalHits: 88, truncated: true`。
+- **`antidebug_api` 信号 API 误报（中）**。规则用 `name.contains(pattern)` 子串匹配，于是 `"signal"` 撞上 `pthread_cond_signal`（把条件变量唤醒当成信号处理器自检）、`"dlopen"` 撞上 `dl_iterate_phdr`（把遍历模块当成动态加载）。修法：规则表去掉裸 `"signal"`/`"sigtrap"`、改为具体 API 名（`sigaction`/`sigprocmask`/`sigtimedwait`/`sigwait`/`sigsetjmp`），匹配逻辑改**精确相等**。实测 `importHits` 从 2（含假阳性）降为 1（只剩真实的 `dl_iterate_phdr`）。
+
+## 1.0.30
+- **`analyze_functions` 在大函数量库上永久降级为 LIEF fallback（高）**。现象：`source: "lief-dynsym-fallback"` + `warning` + `calls` 全为 0，而同一时刻 `rizin_api(analyze)` 明确报 `functions: 1390`。对照实验定位到与函数数量相关：36 个函数的库正常走 `source: "rizin"`，442 个和 1390 个的库全部失败。
+  - 根因在 `app/src/main/cpp/rizin_core.cpp` 的 `rzFunctions`：它用**固定 `char b[512]`** 逐函数 `snprintf` 拼 JSON，长符号名被截断后整个数组不再合法，`JSONArray(...)` 解析失败 → 走 fallback。修法：改为 `std::string` 动态拼接，不再有长度上限。
+  - 附带加固 `escJson()`：旧版直接透传任意高位字节，`NewStringUTF` 遇到非法 UTF-8 会返回 null —— **一个坏名字就能毒死整份 payload**。新版做 UTF-8 校验：合法多字节原样保留、非法字节替换成 `\ufffd`。
+  - Kotlin 侧补诊断（`EngineRuntimeBackendRizin.rzFunctions`）：解析失败时不再只写一句「could not be parsed」，而是带上 `nativePayloadChars` 与 payload 头部 120 字符，下次再出这类问题一眼能看出是截断还是编码。
+  - 实测修复后 `analyze_functions` → `source: "rizin"`、`totalAvailableCount: 1390`、首条 `entry0 @0x41a60` 且带 `ninstr: 93 / complexity: 15 / loops: 1`。
+
 ## 1.0.29
 - **81 个工具全量实测（真实大样本：150 MB APK + 66 个 SO，含商用加固），修掉 6 个工具侧真 bug**。测试目标是一个真实 Flutter 应用（本文不点名），逐工具以真实参数调用并交叉验证结果。
   - **`cache_clear` 会静默销毁所有工作区与编辑会话（高）**。`EngineRuntimeSources.clearCaches()` 里有一句无条件 `workspaces.clear()`，而该工具的 schema 只承诺清「扫描缓存 / 分页缓存」，文档还把 `WORKSPACE_NOT_FOUND` 归因于 LRU 淘汰。工作区持有已解析的 ELF 与编辑会话，**不是缓存**。最小复现：`so_open` → `analyze_elf` 正常 → `cache_clear` → `analyze_elf` 立刻 `WORKSPACE_NOT_FOUND`。修法：默认只清派生缓存，新增 `dropWorkspaces`（默认 `false`）显式要求才丢弃工作区；响应回传 `dropWorkspaces`，日志同时打印保留的工作区数。`EngineRuntime.clearCaches` / `NativeSoEngine.clearCaches` / 工具 schema 三处同步。

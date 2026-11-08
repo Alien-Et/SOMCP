@@ -89,8 +89,13 @@ class NativeSoEngine(context: Context) {
     fun readStats(workspaceId: String, editSessionId: String = "", pathHint: String = ""): JSONObject = runtime.readStats(workspaceId, editSessionId, pathHint)
     fun assembleRaw(workspaceId: String, editSessionId: String = "", asm: String, addr: Long = 0L, thumb: Boolean? = null, mode: String = "auto"): JSONObject =
         runtime.assembleRaw(workspaceId, editSessionId, asm, addr, thumb, mode)
-    fun analysisReport(workspaceId: String, editSessionId: String = "", writeToFile: Boolean = true): JSONObject =
-        runtime.analysisReport(workspaceId, editSessionId, writeToFile)
+    fun analysisReport(
+        workspaceId: String,
+        editSessionId: String = "",
+        writeToFile: Boolean = true,
+        compact: Boolean = true,
+        sampleLimit: Int = REPORT_SAMPLE_LIMIT
+    ): JSONObject = runtime.analysisReport(workspaceId, editSessionId, writeToFile, compact, sampleLimit)
     fun editAudit(workspaceId: String, editSessionId: String): JSONObject = runtime.editAudit(workspaceId, editSessionId)
     fun editHex(workspaceId: String, editSessionId: String, locator: String, edits: JSONArray, dryRun: Boolean = false): JSONObject =
         runtime.editHex(workspaceId, editSessionId, locator, edits, dryRun)
@@ -148,8 +153,8 @@ class NativeSoEngine(context: Context) {
     fun rzCfg(workspaceId: String, editSessionId: String, locator: String): JSONObject = runtime.rzCfg(workspaceId, editSessionId, locator)
     fun rzXrefs(workspaceId: String, editSessionId: String, locator: String, direction: String = "to"): JSONObject =
         runtime.rzXrefs(workspaceId, editSessionId, locator, direction)
-    fun rzSearchBytes(workspaceId: String, editSessionId: String, pattern: String, fromVa: Long = 0, toVa: Long = 0): JSONObject =
-        runtime.rzSearchBytes(workspaceId, editSessionId, pattern, fromVa, toVa)
+    fun rzSearchBytes(workspaceId: String, editSessionId: String, pattern: String, fromVa: Long = 0, toVa: Long = 0, limit: Int = 50): JSONObject =
+        runtime.rzSearchBytes(workspaceId, editSessionId, pattern, fromVa, toVa, limit)
     fun rzScanCrypto(workspaceId: String, editSessionId: String = ""): JSONObject = runtime.rzScanCrypto(workspaceId, editSessionId)
     fun rzEsilStep(workspaceId: String, editSessionId: String, locator: String, stepCount: Int = 1): JSONObject =
         runtime.rzEsilStep(workspaceId, editSessionId, locator, stepCount)

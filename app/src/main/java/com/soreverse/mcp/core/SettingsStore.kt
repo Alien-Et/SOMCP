@@ -306,9 +306,14 @@ class SettingsStore(context: Context) {
     /** Hard cap on the textual size of a single tool result (characters). 0 disables it.
      *  When set, McpHttpServer truncates the JSON payload text past this limit and appends
      *  a "[truncated]" marker — bounding the LLM context cost of chatty tools
-     *  (read_disasm, list, search) without losing the ability to page via cursors. */
+     *  (read_disasm, list, search) without losing the ability to page via cursors.
+     *
+     *  Defaults to 600k: a full `analysis_report` on a large library serialises to
+     *  well over a megabyte, which no caller can consume in one turn and which
+     *  silently blows up any context window. The cap reports `truncated` plus a
+     *  `preview` prefix rather than failing the call. */
     var toolResultMaxChars: Int
-        get() = prefs.getInt("toolResultMaxChars", 0)
+        get() = prefs.getInt("toolResultMaxChars", 600_000)
         set(value) = prefs.edit().putInt("toolResultMaxChars", value.coerceIn(0, 1_000_000)).apply()
 
     /** When true, a failed disassembly falls back to .byte pseudo-instructions so the

@@ -21,6 +21,7 @@ import com.soreverse.mcp.core.ok
 import com.soreverse.mcp.nativecore.NativeEngine
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.ceil
 
 /**
  * A CFF dispatcher is the block every real block funnels back into, so it must
@@ -28,6 +29,21 @@ import org.json.JSONObject
  * the runtime entry point quote these thresholds in their output.
  */
 internal const val DISPATCHER_MIN_FANIN = 3
+
+/**
+ * Fan-in alone is not evidence of flattening. Ordinary C++ emits plenty of
+ * shared tails — error funnels, `operator delete` epilogues, exception cleanup
+ * — that several blocks branch to, so a bare ">= 3 predecessors" test marks
+ * libc++ template code as flattened on every NDK build.
+ *
+ * A real dispatcher is not merely popular, it is *the hub*: flattening replaces
+ * every edge of the original CFG with `state = K; goto dispatcher`, so most of
+ * the function's edges terminate at that one block. These two thresholds encode
+ * that: the in-degree must dominate the function's average in-degree, and it
+ * must account for a large share of all edges in the function.
+ */
+internal const val DISPATCHER_MIN_RATIO = 3.0
+internal const val DISPATCHER_MIN_EDGE_SHARE = 0.25
 
 /** A block this thin is a jump thunk or a state compare, not real work. */
 internal const val THIN_BLOCK_INSTR = 2
@@ -119,6 +135,13 @@ internal object ObfuscDetector {
      * The function's entry block is excluded: every loop back-edge points at
      * it, so it is the one address that is legitimately high-fan-in without
      * being a dispatcher.
+     *
+     * Fan-in is compared against the function's own graph rather than a fixed
+     * number. Ordinary C++ funnels error paths and cleanup blocks into shared
+     * tails, so on a 587-block function a handful of blocks with three
+     * predecessors is unremarkable. Under flattening the dispatcher collects
+     * most of the function's edges, so it is judged by how much of the graph
+     * actually terminates on it.
      */
     private fun findDispatchers(blocks: List<CfgBlock>): Set<Long> {
         if (blocks.size < 6) return emptySet()
@@ -129,13 +152,20 @@ internal object ObfuscDetector {
             }
         }
         val entry = blocks.minByOrNull { it.addr }?.addr
+        val totalEdges = inDegree.values.sum()
+        if (totalEdges == 0) return emptySet()
+        val avgInDegree = totalEdges.toDouble() / blocks.size
+        val minFanIn = maxOf(DISPATCHER_MIN_FANIN, ceil(avgInDegree * DISPATCHER_MIN_RATIO).toInt())
+        val minEdges = ceil(totalEdges * DISPATCHER_MIN_EDGE_SHARE).toInt()
         return blocks
             .filter { b ->
-                (inDegree[b.addr] ?: 0) >= DISPATCHER_MIN_FANIN &&
+                val deg = inDegree[b.addr] ?: 0
+                deg >= minFanIn &&
+                    deg >= minEdges &&
                     b.ninstr <= THIN_BLOCK_INSTR + 2 &&
                     b.addr != entry
             }
-            .map { it.addr }
+            .map { b -> b.addr }
             .toSet()
     }
 
@@ -180,7 +210,7 @@ internal object ObfuscDetector {
         }
         val notes = mutableListOf<String>()
         if (dispatchers.isNotEmpty()) {
-            notes.add("${dispatchers.size} dispatcher-like block(s): fan-in >= $DISPATCHER_MIN_FANIN with a thin body")
+            notes.add("${dispatchers.size} dispatcher-like block(s): fan-in dominating the function with a thin body")
         }
         if (factor >= 8.0) notes.add("flattening factor ${"%.1f".format(factor)} blocks per dispatcher")
         if (bogus >= 0.25) notes.add("${"%.0f".format(bogus * 100)}% of blocks are <= $THIN_BLOCK_INSTR instructions (bogus-edge candidates)")
@@ -252,7 +282,7 @@ internal fun EngineRuntime.obfuscScan(workspaceId: String, editSessionId: String
             .put("functions", results)
             .put(
                 "method",
-                "Structural CFG analysis: dispatcher blocks (fan-in >= $DISPATCHER_MIN_FANIN with a thin body, excluding the entry block) plus flattening factor and thin-block ratio. No symbol-name heuristics are used."
+                "Structural CFG analysis: a dispatcher must be reached by ${"%.1f".format(DISPATCHER_MIN_RATIO)}x the function's average in-degree and collect at least ${"%.0f".format(DISPATCHER_MIN_EDGE_SHARE * 100)}% of its edges, with a thin body and excluding the entry block; flattening factor and thin-block ratio follow. No symbol-name heuristics are used."
             )
             .put(
                 "limits",

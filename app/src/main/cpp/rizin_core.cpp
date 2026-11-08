@@ -169,24 +169,48 @@ namespace {
         if (!path.empty()) unlink(path.c_str());
     }
 
+    // JSON string escaping with UTF-8 validation.
+    // JSON allows raw UTF-8, but JNI NewStringUTF only accepts *valid modified
+    // UTF-8*: one invalid byte anywhere makes it return null. A null jstring then
+    // reaches Kotlin as a null String and every JSON parse of that payload fails,
+    // which is exactly how a single odd function name used to poison the whole
+    // rzFunctions array. Valid multi-byte sequences are copied verbatim (so CJK
+    // text still round-trips), invalid bytes are replaced with \ufffd.
     std::string escJson(const std::string& s) {
         std::string out;
         out.reserve(s.size() + 8);
-        for (char c : s) {
-            switch (c) {
-                case '"':  out += "\\\""; break;
-                case '\\': out += "\\\\"; break;
-                case '\n': out += "\\n"; break;
-                case '\r': out += "\\r"; break;
-                case '\t': out += "\\t"; break;
-                default:
-                    if ((unsigned char)c < 0x20) {
-                        char buf[8];
-                        snprintf(buf, sizeof(buf), "\\u%04x", (unsigned char)c);
-                        out += buf;
-                    } else {
-                        out += c;
-                    }
+        size_t i = 0;
+        while (i < s.size()) {
+            unsigned char c = (unsigned char)s[i];
+            if (c == '"') { out += "\\\""; i++; continue; }
+            if (c == '\\') { out += "\\\\"; i++; continue; }
+            if (c == '\n') { out += "\\n"; i++; continue; }
+            if (c == '\r') { out += "\\r"; i++; continue; }
+            if (c == '\t') { out += "\\t"; i++; continue; }
+            if (c < 0x20) {
+                char buf[8];
+                snprintf(buf, sizeof(buf), "\\u%04x", c);
+                out += buf;
+                i++;
+                continue;
+            }
+            if (c < 0x80) { out += (char)c; i++; continue; }
+            int len = 0;
+            if ((c & 0xE0) == 0xC0) len = 2;
+            else if ((c & 0xF0) == 0xE0) len = 3;
+            else if ((c & 0xF8) == 0xF0) len = 4;
+            bool valid = len > 0 && (i + (size_t)len) <= s.size();
+            if (valid) {
+                for (int k = 1; k < len; k++) {
+                    if (((unsigned char)s[i + k] & 0xC0) != 0x80) { valid = false; break; }
+                }
+            }
+            if (valid) {
+                out.append(s, i, (size_t)len);
+                i += (size_t)len;
+            } else {
+                out += "\\ufffd";
+                i++;
             }
         }
         return out;
@@ -897,17 +921,25 @@ Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzFunctions(
             ut64 fsize = rz_analysis_function_size_from_entry(fcn);
             ut32 complexity = rz_analysis_function_complexity(fcn);
             ut32 loops = rz_analysis_function_loops(fcn);
-            char b[512];
             const char* name = fcn->name ? fcn->name : "";
-            snprintf(b, sizeof(b),
-                     "{\"name\":\"%s\",\"addr\":%llu,\"size\":%llu,\"ninstr\":%d,\"complexity\":%u,\"loops\":%u,\"isPure\":%s}",
-                     escJson(name).c_str(),
+            // NOTE: build the object with dynamic std::string growth instead of a
+            // fixed char b[512] buffer. With 1000+ functions and long C++ symbols a
+            // fixed buffer silently truncates (snprintf keeps the prefix only) and
+            // the whole array becomes unparseable JSON, which surfaced to callers as
+            // "function JSON could not be parsed" plus a silent LIEF fallback.
+            char numBuf[128];
+            snprintf(numBuf, sizeof(numBuf),
+                     "\"addr\":%llu,\"size\":%llu,\"ninstr\":%d,\"complexity\":%u,\"loops\":%u,\"isPure\":%s",
                      (unsigned long long)fcn->addr,
                      (unsigned long long)fsize,
                      fcn->ninstr,
                      complexity, loops,
                      fcn->is_pure ? "true" : "false");
-            out += b;
+            out += "{\"name\":\"";
+            out += escJson(name);
+            out += "\",";
+            out += numBuf;
+            out += "}";
         }
     }
     out += "]";

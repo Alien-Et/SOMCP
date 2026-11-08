@@ -87,8 +87,8 @@ internal object AntiDebugScanner {
         Rule(
             "anti_hook",
             "signal handler self-check",
-            listOf("sigaction", "signal", "sigtrap", "sigsetjmp"),
-            "Imports signal APIs; a SIGTRAP/SIGBUS handler comparing its own code detects hooks"
+            listOf("sigaction", "sigprocmask", "sigtimedwait", "sigwait", "sigsetjmp"),
+            "Imports signal handler APIs; a SIGTRAP/SIGBUS handler comparing its own code detects hooks"
         )
     )
 
@@ -176,7 +176,11 @@ internal object AntiDebugScanner {
         val findings = mutableListOf<AntiDebugFinding>()
 
         IMPORT_RULES.forEach { rule ->
-            val hit = imports.firstOrNull { name -> rule.patterns.any { name.contains(it, ignoreCase = true) } }
+            // 【修复】import 符号名做精确匹配而不是子串 contains。旧逻辑里
+            // "signal" 会命中 pthread_cond_signal，"dlopen" 也会命中
+            // dl_iterate_phdr —— 都是纯粹的文本撞车，不代表反调试意图。
+            // Rule.patterns 现在的语义就是「符号名等于它之一」。
+            val hit = imports.firstOrNull { name -> name in rule.patterns }
             if (hit != null) {
                 findings.add(
                     AntiDebugFinding(rule.category, rule.technique, "import", "${rule.explain} (imports '$hit')")

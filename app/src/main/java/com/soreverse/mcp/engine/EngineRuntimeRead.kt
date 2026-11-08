@@ -286,6 +286,34 @@ internal fun EngineRuntime.disasm(
     thumb: Boolean? = null,
     mode: String = "auto"
 ): JSONObject = guarded {
+    // A section / zip_entry / resource locator is a perfectly good locator for
+    // the read tools that accept one, and read_disasm used to answer it with a
+    // bare FUNCTION_NOT_FOUND — which reads as "this function does not exist"
+    // rather than "this tool takes a function, not a section". Name the mistake.
+    val wrongKind = locator.trim().let { raw ->
+        val prefix = raw.substringBefore(':', missingDelimiterValue = "")
+        val known = setOf(
+            "so_section", "so_function", "so_symbol", "zip_entry", "axml",
+            "dex_class", "dex_method", "dex_field", "resource", "section"
+        )
+        when {
+            prefix in known && prefix != "so_function" && prefix != "so_symbol" -> prefix
+            raw.startsWith(".") && raw.none { it == ' ' } -> "section"
+            else -> null
+        }
+    }
+    if (wrongKind != null) {
+        return@guarded err(
+            "INVALID_LOCATOR_KIND",
+            "read_disasm disassembles a function, but the locator looks like a $wrongKind " +
+                "reference. Pass a function locator (so_function:<file>!<name>@0x<va>), " +
+                "a symbol name, or a bare 0x<va> address.",
+            "locator",
+            locator,
+            "detectedKind" to wrongKind,
+            "acceptedForms" to acceptedLocatorForms()
+        )
+    }
     val cursorArgs = DisasmCursorCodec.decode(cursor)
     if (cursor.startsWith("disasm:") &&
         cursorArgs == null
@@ -760,7 +788,12 @@ private fun EngineRuntime.resolveOutlineTarget(
     for (index in 0 until arr.length()) {
         val fn = arr.optJSONObject(index) ?: continue
         val fnName = fn.optString("name")
-        val addr = LocatorParser.hex(fn.optString("addr")) ?: continue
+        // 【修复】rzFunctions 返回的 addr 是 JSON number（十进制）。optString 会把它
+        // 变成字符串 "268896"，再被 hex() 按十六进制解析成 0x268896 —— 恰好比真实
+        // 地址 0x41a60 大了 6 倍多，且看起来"合法"，极难察觉。必须按数值读。
+        val addr = (if (fn.isNull("addr")) null else fn.optLong("addr", -1L).takeIf { it >= 0 })
+            ?: LocatorParser.hex(fn.optString("addr"))
+            ?: continue
         val size = fn.optLong("size", 0L)
         val hit = (va != null && addr == va) ||
             (fnName.isNotBlank() && fnName == name) ||

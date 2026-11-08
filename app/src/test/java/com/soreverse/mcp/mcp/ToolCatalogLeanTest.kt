@@ -18,8 +18,12 @@
 // Guards for the lean tool list. The load-bearing case is gateway visibility:
 // lean mode is on by default, and a gateway classified EXTRA with a niche
 // category can only enter the list through popularity promotion — which needs a
-// prior successful call. That made `agent_api`, the only door to sub-agents,
-// unreachable for a client that had never spawned one.
+// prior successful call. That once made the sub-agent gateway unreachable for a
+// client that had never spawned one.
+//
+// The sub-agent gateway itself has since been removed from this build, so the
+// guards now assert the general rule (every gateway category is advertised) and
+// pin the removal explicitly, so a future re-addition has to revisit the rule.
 package com.soreverse.mcp.mcp
 
 import org.junit.Assert.assertFalse
@@ -27,12 +31,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ToolCatalogLeanTest {
+    /** Categories whose tools fan out to a whole engine and must stay visible. */
+    private val gatewayCategories = setOf("lowlevel")
+
     @Test
     fun everyGatewayIsAdvertisedByDefault() {
         val lean = ToolCatalog.leanNames().toSet()
-        val gateways = ToolCatalog.ALL.filter {
-            it.meta.category == "lowlevel" || it.meta.category == "agent"
-        }
+        val gateways = ToolCatalog.ALL.filter { it.meta.category in gatewayCategories }
         assertTrue("there must be gateways to check", gateways.isNotEmpty())
         gateways.forEach {
             assertTrue(
@@ -43,24 +48,36 @@ class ToolCatalogLeanTest {
     }
 
     @Test
-    fun theSubAgentGatewayIsReachableWithoutPriorPopularity() {
-        // The regression itself: no popularity map, no promotion slots, and the
-        // tool is still advertised.
-        assertTrue("agent_api must be in the default lean list", "agent_api" in ToolCatalog.leanNames())
-        assertTrue(
-            "agent_api must survive even with promotion switched off",
-            "agent_api" in ToolCatalog.registry.leanNames(popularity = null, promotionSlots = 0)
-        )
+    fun everyGatewaySurvivesWithoutPriorPopularity() {
+        // The regression the gateway rule exists for: no popularity map, no
+        // promotion slots, and the gateway is still advertised.
+        val lean = ToolCatalog.registry
+            .leanNames(popularity = null, promotionSlots = 0)
+            .toSet()
+        ToolCatalog.ALL
+            .filter { it.meta.category in gatewayCategories }
+            .forEach {
+                assertTrue("${it.meta.name} must survive promotion being off", it.meta.name in lean)
+            }
+    }
+
+    @Test
+    fun theRemovedSubAgentGatewayStaysRemoved() {
+        // The AI sub-agent surface (agent_api and friends) was removed from this
+        // build. Pinning its absence keeps a stray re-registration from shipping
+        // silently, and documents why the "agent" gateway category is gone.
+        listOf("agent_api", "spawn_subagent", "dynamic_analyze_ai", "static_analyze_ai")
+            .forEach { name ->
+                assertFalse("$name was removed from this build", name in ToolCatalog.names)
+            }
     }
 
     @Test
     fun nonGatewayExtrasStillNeedPromotion() {
-        // The fix must not turn lean mode into "advertise everything": an EXTRA
+        // The rule must not turn lean mode into "advertise everything": an EXTRA
         // tool outside a gateway category stays out until the client uses it.
         val exotic = ToolCatalog.ALL.filter {
-            it.meta.cls == ToolClass.EXTRA &&
-                it.meta.category != "lowlevel" &&
-                it.meta.category != "agent"
+            it.meta.cls == ToolClass.EXTRA && it.meta.category !in gatewayCategories
         }
         assertTrue("there must be non-gateway extras", exotic.isNotEmpty())
         val lean = ToolCatalog.leanNames().toSet()
@@ -72,20 +89,23 @@ class ToolCatalogLeanTest {
     @Test
     fun popularityPromotesNonGatewayExtrasOnly() {
         val target = ToolCatalog.ALL.first {
-            it.meta.cls == ToolClass.EXTRA &&
-                it.meta.category != "lowlevel" &&
-                it.meta.category != "agent"
+            it.meta.cls == ToolClass.EXTRA && it.meta.category !in gatewayCategories
         }
         val lean = ToolCatalog.leanNames(popularity = mapOf(target.meta.name to 7L))
         assertTrue("a used extra should be promoted", target.meta.name in lean)
-        // Promotion must not duplicate an already-present gateway.
-        val count = lean.count { it == "agent_api" }
-        assertTrue("agent_api listed $count times", count == 1)
+        // Promotion must not duplicate a name that is already present.
+        val gateway = ToolCatalog.ALL.first { it.meta.category in gatewayCategories }.meta.name
+        val count = lean.count { it == gateway }
+        assertTrue("$gateway listed $count times", count == 1)
     }
 
     @Test
     fun fullCatalogIsUnaffectedByTheGatewayRule() {
-        assertTrue(ToolCatalog.names.contains("agent_api"))
         assertTrue("catalog shrank", ToolCatalog.names.size >= 46)
+        // The full catalog is the registry itself: nothing is filtered out of it.
+        assertTrue(
+            "full catalog must contain every registered handler",
+            ToolCatalog.names.containsAll(ToolCatalog.ALL.map { it.meta.name })
+        )
     }
 }

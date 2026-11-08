@@ -9,7 +9,36 @@ import kotlin.math.min
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal fun EngineRuntime.analysisReport(workspaceId: String, editSessionId: String = "", writeToFile: Boolean = true): JSONObject = guarded {
+/**
+ * A full report on a large library serialises to well over a megabyte: a
+ * 2000-entry dynsym table, a 3000-entry relocation table and a 1400-entry
+ * function list are each tens of thousands of characters of JSON, and the sum
+ * cannot be consumed in one turn by anything.
+ *
+ * `compact` (the default) keeps every key and every array — a caller that
+ * iterates `dynsyms` still iterates an array — but caps the five bulky arrays
+ * at [REPORT_SAMPLE_LIMIT] entries and reports the real totals under
+ * `truncation`. The complete data stays reachable two ways: `writeToFile=true`
+ * writes the full JSON to disk, and `analyze_elf(view=list, subView=...)` pages
+ * any single table.
+ */
+internal const val REPORT_SAMPLE_LIMIT = 20
+
+/** Truncate [arr] in place and return how many entries were dropped. */
+private fun capArray(arr: JSONArray, limit: Int): Int {
+    val dropped = arr.length() - limit
+    if (dropped <= 0) return 0
+    for (i in arr.length() - 1 downTo limit) arr.remove(i)
+    return dropped
+}
+
+internal fun EngineRuntime.analysisReport(
+    workspaceId: String,
+    editSessionId: String = "",
+    writeToFile: Boolean = true,
+    compact: Boolean = true,
+    sampleLimit: Int = REPORT_SAMPLE_LIMIT
+): JSONObject = guarded {
     val resolvedId = resolveWorkspaceId(workspaceId, "")
     val ws =
         touchWorkspace(resolvedId)
@@ -57,6 +86,30 @@ internal fun EngineRuntime.analysisReport(workspaceId: String, editSessionId: St
             "JNI exports detected: use emulate_call for JNI_OnLoad or Java_* validation"
         )
     }
+    val imports = list(resolvedId, editSessionId, "imports", "", 5000).optJSONArray("items")
+        ?: JSONArray()
+    val relocations = list(resolvedId, editSessionId, "relocations", "", 5000).optJSONArray("items")
+        ?: JSONArray()
+    // Capture the real sizes before compaction, so `truncation` can report what
+    // the response is holding back rather than what it happens to contain.
+    val totals = JSONObject()
+        .put("dynsyms", dynsyms.length())
+        .put("imports", imports.length())
+        .put("relocations", relocations.length())
+        .put("strings", strings.length())
+        .put("functions", functions.length())
+    val dropped = if (compact) {
+        val limit = sampleLimit.coerceIn(1, 5000)
+        val d = JSONObject()
+            .put("dynsyms", capArray(dynsyms, limit))
+            .put("imports", capArray(imports, limit))
+            .put("relocations", capArray(relocations, limit))
+            .put("strings", capArray(strings, limit))
+            .put("functions", capArray(functions, limit))
+        d
+    } else {
+        null
+    }
     val payload = JSONObject()
         .put("workspaceId", resolvedId)
         .put("editSessionId", editSessionId)
@@ -78,16 +131,8 @@ internal fun EngineRuntime.analysisReport(workspaceId: String, editSessionId: St
         .put("programHeaders", JSONArray(elf.programHeaders.map { EngineJson.phJson(it) }))
         .put("dynamicEntries", JSONArray(elf.dynamicEntries.map { EngineJson.dynJson(it) }))
         .put("dynsyms", dynsyms)
-        .put(
-            "imports",
-            list(resolvedId, editSessionId, "imports", "", 5000).optJSONArray("items")
-                ?: JSONArray()
-        )
-        .put(
-            "relocations",
-            list(resolvedId, editSessionId, "relocations", "", 5000).optJSONArray("items")
-                ?: JSONArray()
-        )
+        .put("imports", imports)
+        .put("relocations", relocations)
         .put("strings", strings)
         .put("functions", functions)
         .put("crypto", crypto)
@@ -96,6 +141,24 @@ internal fun EngineRuntime.analysisReport(workspaceId: String, editSessionId: St
             analyze(resolvedId, editSessionId).optJSONObject("security") ?: JSONObject()
         )
         .put("recommendations", recommendations)
+        .put("totals", totals)
+        .apply {
+            if (dropped != null) {
+                put(
+                    "truncation",
+                    JSONObject()
+                        .put("applied", true)
+                        .put("sampleLimit", sampleLimit.coerceIn(1, 5000))
+                        .put("droppedEntries", dropped)
+                        .put(
+                            "note",
+                            "Each bulky array keeps its first sampleLimit entries; `totals` " +
+                                "holds the real sizes. Pass compact=false, or page the table " +
+                                "with analyze_elf(view=list, subView=<name>), for everything."
+                        )
+                )
+            }
+        }
     val file = if (writeToFile) {
         val dir = reportDir()
         val safeName = ws.source.name.replace(Regex("[^A-Za-z0-9._-]"), "_")

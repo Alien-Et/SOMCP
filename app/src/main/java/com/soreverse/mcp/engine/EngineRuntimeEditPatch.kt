@@ -1,5 +1,6 @@
 package com.soreverse.mcp.engine
 
+import com.soreverse.mcp.core.HexCodec
 import com.soreverse.mcp.core.optText
 
 import com.soreverse.mcp.core.SettingsStore
@@ -117,8 +118,13 @@ internal fun EngineRuntime.editHex(workspaceId: String, editSessionId: String, l
                         patch.size
                     )
                 }
-                val relOff = edit.optInt("byteOffset", edit.optInt("offset", Int.MIN_VALUE))
-                if (relOff == Int.MIN_VALUE) {
+                // 【修复】schema 把 byteOffset 声明为 string（可传 "0x4a0" 这种十六进制），
+                // 但旧实现用 optInt 只认 JSON number —— 传字符串就报「Missing byteOffset」，
+                // 字符串里的十六进制前缀也永远解析不了。这里统一按字符串读，支持
+                // 十进制 / 0x 前缀 / 裸十六进制，number 类型也兼容。
+                val relOff = parseOffsetField(
+                    edit.opt("byteOffset") ?: edit.opt("offset")
+                ) ?: run {
                     return@withSession err(
                         "INVALID_ARGUMENT",
                         "Missing byteOffset (alias: offset) for hex edit at index $i",
@@ -651,20 +657,15 @@ private fun EngineRuntime.asmEditRange(
                 "address must be a hex VA like 0x978, got ${edit.optString("address")}"
             )
         val off = (addr - startVa).toInt()
-        val length = when {
-            edit.optInt("byteLength", 0) > 0 -> edit.optInt("byteLength", 0)
-
-            edit.optInt("length", 0) > 0 -> edit.optInt("length", 0)
-
-            edit.has(
-                "instructionCount"
-            ) -> edit.optInt("instructionCount", 1).coerceAtLeast(1) *
-                step
-
-            edit.has("count") -> edit.optInt("count", 1).coerceAtLeast(1) * step
-
-            else -> step
-        }
+        val length = parseOffsetField(edit.opt("byteLength"))?.takeIf { it > 0 }
+            ?: parseOffsetField(edit.opt("length"))?.takeIf { it > 0 }
+            ?: (
+                (
+                    parseOffsetField(edit.opt("instructionCount"))
+                        ?: parseOffsetField(edit.opt("count"))
+                        ?: 1
+                    ).coerceAtLeast(1) * step
+                )
         require(off >= 0 && length > 0 && off + length <= maxBytes) {
             "Assembly edit address range [${hex(
                 off.toLong()
@@ -673,38 +674,60 @@ private fun EngineRuntime.asmEditRange(
         return off to length
     }
     if (edit.has("instructionIndex")) {
-        val idx = edit.optInt("instructionIndex", 0)
-        val count = edit.optInt("instructionCount", edit.optInt("count", 1)).coerceAtLeast(1)
+        val idx = parseOffsetField(edit.opt("instructionIndex")) ?: 0
+        val count = (
+            parseOffsetField(edit.opt("instructionCount"))
+                ?: parseOffsetField(edit.opt("count"))
+                ?: 1
+            ).coerceAtLeast(1)
         val off = idx * step
-        val length = when {
-            edit.optInt("byteLength", 0) > 0 -> edit.optInt("byteLength", 0)
-            edit.optInt("length", 0) > 0 -> edit.optInt("length", 0)
-            else -> count * step
-        }
+        val length = parseOffsetField(edit.opt("byteLength"))?.takeIf { it > 0 }
+            ?: parseOffsetField(edit.opt("length"))?.takeIf { it > 0 }
+            ?: (count * step)
         require(idx >= 0 && length > 0 && off + length <= maxBytes) {
             "Assembly edit instruction range exceeds function bytes"
         }
         return off to length
     }
+    // 兼容 "0x4a0" / "1184" / 1184 三种写法（schema 把 byteOffset 声明为 string）。
+    val byteOffsetField = if (edit.has("byteOffset")) parseOffsetField(edit.opt("byteOffset")) else null
+    val offsetField = if (edit.has("offset")) parseOffsetField(edit.opt("offset")) else null
     val explicitByteOffset = when {
-        edit.has(
-            "byteOffset"
-        ) &&
-            edit.optInt("byteOffset", 0) != 0 -> edit.optInt("byteOffset", 0)
-
-        edit.has("offset") && edit.optInt("offset", 0) != 0 -> edit.optInt("offset", 0)
-
-        edit.has("byteOffset") && !edit.has("instructionIndex") -> edit.optInt("byteOffset", 0)
-
-        edit.has("offset") && !edit.has("instructionIndex") -> edit.optInt("offset", 0)
-
+        byteOffsetField != null && byteOffsetField != 0 -> byteOffsetField
+        offsetField != null && offsetField != 0 -> offsetField
+        !edit.has("instructionIndex") -> byteOffsetField ?: offsetField ?: 0
         else -> 0
     }
-    val length =
-        edit.optInt("byteLength", edit.optInt("length", 0)).takeIf { it > 0 }
-            ?: edit.optInt("instructionCount", edit.optInt("count", 1)).coerceAtLeast(1) * step
+    val length = parseOffsetField(edit.opt("byteLength"))?.takeIf { it > 0 }
+        ?: parseOffsetField(edit.opt("length"))?.takeIf { it > 0 }
+        ?: (
+            (
+                parseOffsetField(edit.opt("instructionCount"))
+                    ?: parseOffsetField(edit.opt("count"))
+                    ?: 1
+                ).coerceAtLeast(1) * step
+            )
     require(explicitByteOffset >= 0 && length > 0 && explicitByteOffset + length <= maxBytes) {
         "Assembly edit byte range exceeds function bytes"
     }
     return explicitByteOffset to length
+}
+
+/**
+ * 解析 offset / 长度类字段：兼容 JSON number、十进制字符串、0x 前缀十六进制、裸十六进制。
+ *
+ * 背景：schema 里 byteOffset / byteLength 等声明为 string（允许 "0x4a0" 这种写法），
+ * 但旧实现一律走 JSONObject.optInt —— 字符串输入会被当成「缺字段」直接丢掉，
+ * 十六进制前缀更是永远解析不出来。所有补丁类入口统一走这里。
+ */
+internal fun parseOffsetField(value: Any?): Int? = when (value) {
+    null, JSONObject.NULL -> null
+    is Number -> value.toInt().takeIf { it >= 0 }
+    is String -> {
+        val t = value.trim()
+        if (t.isEmpty()) null
+        else t.toIntOrNull()
+            ?: HexCodec.long(t)?.takeIf { it <= Int.MAX_VALUE }?.toInt()?.takeIf { it >= 0 }
+    }
+    else -> null
 }

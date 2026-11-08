@@ -256,7 +256,16 @@ class StringDecryptorTest {
     fun blobScanSkipsPlainTextAndZeroPadding() {
         val data = ByteArray(64)
         text("hello world this is plaintext").copyInto(data, 0)
-        for (i in 32 until 48) data[i] = (0x90 + i).toByte()
+        // A ciphertext run must span the byte space (high bit set and a spread of
+        // at least 0x80), otherwise .rodata float/jump-table entries qualify.
+        // These 16 bytes are all non-printable, non-zero, high-entropy and span
+        // 0x01..0xFF, so they read as ciphertext by every scan-stage filter.
+        byteArrayOf(
+            0x01, 0x81.toByte(), 0x1F, 0x9E.toByte(),
+            0x02, 0xA5.toByte(), 0x03, 0xBC.toByte(),
+            0x04, 0xD3.toByte(), 0x05, 0xEA.toByte(),
+            0x06, 0xF1.toByte(), 0x07, 0xFF.toByte()
+        ).copyInto(data, 32)
         val section = SectionInfo(
             name = ".rodata",
             type = 1,
