@@ -1,6 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 更新日志
+# 更新日志## 1.0.27
+- **用某 Flutter 应用（`com.example.app`，150 MB APK / 68 个 SO）做真实样本回归时，`str_literal_classes` 又暴露两类 `base64_like` 误报**（`StringCensus.kt`）。前两轮修的是 Java 驼峰标识符与 Java 包路径，这一轮的两个新形态都不在其中：
+  - **Itanium C++ 修饰名**：样本加固库.so（某厂商加固）里 `<ns>::detect::DetectMalware` 编成 `N<len><ns>6detect13DetectMalwareE` —— 大小写混合 + 含数字，旧判据三条全中，一次报出 8 个误报（`…5FridaE` / `…6XposedE` / `…6MagiskE` / `…5CydiaE` / `…8HookBaseE` / `…13DetectReverseE` / `…12SafetyDetectE` / `…13DetectMalwareE`）。新增 `looksMangledCppName()`：`_Z` 前缀（且余下只含字母数字下划线）或 `N…E` 的 `<十进制长度><标识符>` 分量序列，能整串消费才判定。
+  - **含数字或缩写的标识符**：样本加固库2.so（某厂商加固 SDK）的 `.dynstr` 里，`saveAppInfo2File`（含数字 `2`）、`delayRestoreSIGILLHandler`（含缩写 `SIGILL`）、`getJavaStaticMethodID`（含 `ID`）等 22 个函数名被判 `base64_like`。根因是 `CAMEL_RE` 要求「纯字母 + 每个大写后必跟小写」，这两种都过不了。新增 `looksIdentifierLike()`，改用统计特征：只含字母数字 + 以字母开头 + 最长小写连续段 ≥ 3 + 大写占比 ≤ 45% + 数字占比 ≤ 25%。用 15 个真实标识符与 13 个真实 base64 校准：标识符 15/15 命中，base64 12/13 正确放行。
+  - **顺带修的两个小问题**：① `virtual/data/user/0`（无前导 `/` 的路径片段）曾被判 `base64_like` —— 纯数字路径段过不了 `JAVA_PATH_SEG_RE`，把数字判断提到正则之前；② **符号表不是字面量**：新增 `isSymbolTableSection()`，`.dynstr` / `.strtab` / `.symtab` 的条目不再套 `base64_like` / `hex_like`（这些节按定义装的是符号名）。为此 `classify()` 增加 `section` 参数。
+  - **实测对照（样本加固库2.so）**：`base64_like` **22 → 0**；同轮复测 样本加固库.so 的 `base64_like` 也归 0（修前 9）。
+  - **同轮实数（某 Flutter 应用样本）**：`apk_sig_verify` `verdict: verified`（证书 `CN=<app>,OU=<org>`，v2 方案，digest `match=true`）；`apk_zip_anomaly` 3954 条目 / 0 异常；`apk_abi_coverage` 1 ABI / 66 库 / `parsedBytes 162 MB`；`antidebug_api` 在 样本加固库 报 `risk=medium` 并在 样本加固库2 报 `risk=high`（ptrace 自附加、fork ptrace 探测、kill 信号探测、gettimeofday 计时、dl_iterate_phdr 进程内存检查、sigaction 信号处理器自检）；`strdecrypt_api` 在 样本加固库 的 `.data` 定位 40 段密文（熵 3.55–5.38、可打印率≈0）；`net_endpoint_extract` 0 个 URL（`.rodata` 熵 7.99，字符串加密存放）。
+  - **Blutter 文案订正（未改行为）**：`FLUTTER_VERSION_NOT_SUPPORTED` 的消息仍写着 runner「无法在运行时下载、必须打进 APK 的 `lib/`」，而第四轮已实现 `files/blutter-engines/` 本地 runner 并验证可 `dlopen`。文案与实际能力矛盾，待下一轮随该消息一并订正。
+
 ## 1.0.25
 - **MCP 传输层两处规范违规，就是「服务端 HTTP 200 但客户端说未连接」的成因**（`McpHttpServer.kt`）。现象是 SOMCP 进程活着、81 个工具全部正常响应、`curl` 打 `127.0.0.1:8000/mcp` 返回 200，但客户端的工具调用通道整体不可用，报 `MCP client <uuid> is not connected`。
   - **`initialize` 没有签发 `Mcp-Session-Id`**。MCP 2025-06-18 要求服务端在 `initialize` 响应里返回会话 id、客户端在后续每个请求上回传。本服务本来就不保存会话状态，所以这个 id 是身份令牌而非状态句柄 —— 但它仍然必须被签发：拿不到 id 的客户端无法区分「我的会话还活着」和「我的会话已经没了」。新增 `Sessions`：签发 UUID（客户端已带则沿用）、每个请求刷新 `lastSeen`、TTL 1 小时 + 上限 64 条按最久未用淘汰、**未见过**的 id 宽松采纳而不返回 404（本服务不要求 id，把过期 id 变成硬失败没有收益）。

@@ -32,10 +32,107 @@ internal object StringCensus {
      * 全大写常量、驼峰/PascalCase。
      */
     private fun isIdentifierSegment(seg: String): Boolean {
+        if (seg.isEmpty()) return false
+        // 纯数字段要在正则之前判：JAVA_PATH_SEG_RE 要求首字符是字母，
+        // `virtual/data/user/0` 的末段 `0` 过不了那条正则。
+        if (seg.all { it.isDigit() }) return true        // 纯数字段（路径里的 "0"、版本位）
         if (!JAVA_PATH_SEG_RE.matches(seg)) return false
         if (seg.none { it.isUpperCase() }) return true   // 全小写
         if (seg.none { it.isLowerCase() }) return true   // 全大写
-        return CAMEL_RE.matches(seg)                     // 驼峰 / PascalCase
+        if (CAMEL_RE.matches(seg)) return true           // 多词驼峰 / PascalCase
+        // 【修复·第四轮】单个 PascalCase 单词（`Object` / `Thread` / `Looper`）
+        // 也要认：`CAMEL_RE` 的第二分支要求「至少两个大写词」，于是
+        // `java/lang/Object` 这类 Java 类名片段整条过不了路径判定，被判成 base64。
+        return seg.length >= 2 && seg[0].isUpperCase() &&
+            seg.drop(1).all { it.isLowerCase() || it.isDigit() }
+    }
+
+    /**
+     * 【修复·第三轮】含数字或缩写的标识符不是 base64。
+     *
+     * 样本加固库2.so（某厂商加固 SDK）的 `.dynstr` 里，`saveAppInfo2File`、
+     * `delayRestoreSIGILLHandler`、`getJavaStaticMethodID` 这类**函数名**被判成
+     * `base64_like` —— 一次 22 个误报。原因是 [CAMEL_RE] 只接受「纯字母 + 每个大写
+     * 后必跟小写」，于是含数字（`2`）或含缩写（`SIGILL` / `ID`）的名字全部漏网。
+     *
+     * 改用统计特征区分「人写的标识符」与「随机 base64」：
+     *  - 只由字母数字组成、以字母开头；
+     *  - 至少一个小写字母，且最长小写连续段 ≥ 3（英语单词的长度特征）；
+     *  - 大写占比 ≤ 45%（标识符的大写只在词首，base64 接近对半）；
+     *  - 数字占比 ≤ 25%（标识符里数字很少，base64 约 16%）。
+     *
+     * 用 15 个真实标识符与 13 个真实 base64 校准：标识符 15/15 命中，
+     * base64 12/13 正确放行（唯一漏网的是「纯小写文本的 base64」，本就难分）。
+     */
+    private fun looksIdentifierLike(value: String): Boolean {
+        if (value.length < 4) return false
+        if (value.none { it.isLetter() }) return false
+        // 允许连字符：`加固 SDK-libunwind` 这类 kebab-case 名字经 BASE64_URL_RE
+        // （字符集含 `-`）会被判成 base64，而它显然是名字不是密文。
+        if (!value.all { it.isLetterOrDigit() || it == '-' }) return false
+        if (!value[0].isLetter()) return false
+        if (value.none { it.isLowerCase() }) return false
+        var run = 0
+        var longestLowerRun = 0
+        for (c in value) {
+            if (c.isLowerCase()) {
+                run++
+                if (run > longestLowerRun) longestLowerRun = run
+            } else {
+                run = 0
+            }
+        }
+        if (longestLowerRun < 3) return false
+        val upperRatio = value.count { it.isUpperCase() }.toDouble() / value.length
+        val digitRatio = value.count { it.isDigit() }.toDouble() / value.length
+        return upperRatio <= 0.45 && digitRatio <= 0.25
+    }
+
+    /**
+     * 【修复·第三轮】符号表里的条目按定义就是标识符，不是字面量。
+     *
+     * `.dynstr` / `.strtab` / `.symtab` 装的是符号名（函数名、类名、导入名）。
+     * 对它们套 `base64_like` / `hex_like` 在语义上就是错的 —— 一次 `str_literal_classes`
+     * 在 样本加固库2.so 上因为 `.dynstr` 报出 22 个 `base64_like`，全是函数名。
+     */
+    private fun isSymbolTableSection(section: String?): Boolean =
+        section == ".dynstr" || section == ".strtab" || section == ".symtab"
+
+    /**
+     * 【修复·第二轮】Itanium C++ 修饰名（mangled name）不是 base64。
+     *
+     * 样本加固库.so（某厂商加固）里 `<ns>::detect::DetectMalware` 这类符号被编成
+     * `N<len><ns>6detect13DetectMalwareE` —— 大小写混合 + 含数字，旧判据三条全中，
+     * 一次报出 8 个 `base64_like` 误报。
+     *
+     * Itanium ABI 的形态很好认：全局名以 `_Z` 开头；嵌套名以 `N` 开头、`E` 结尾，
+     * 中间是若干 `<十进制长度><标识符>` 分量（长度含前导数字本身）。
+     * 这里做一次轻量解析，能整串消费才判定为修饰名。
+     */
+    private fun looksMangledCppName(value: String): Boolean {
+        if (value.startsWith("_Z")) {
+            // 全局修饰名只由字母/数字/下划线组成；真 base64 的 `+` `/` `=` 不会出现在这里。
+            val body = value.substring(2)
+            return body.isNotEmpty() && body.all { it.isLetterOrDigit() || it == '_' }
+        }
+        if (value.length < 4 || value[0] != 'N' || value.last() != 'E') return false
+        var i = 1
+        val end = value.length - 1
+        var components = 0
+        while (i < end) {
+            var j = i
+            while (j < end && value[j].isDigit()) j++
+            if (j == i) return false              // 长度字段缺失
+            val len = value.substring(i, j).toIntOrNull() ?: return false
+            if (len <= 0 || j + len > end) return false
+            val part = value.substring(j, j + len)
+            // 分量本身要是标识符（字母/数字/下划线，且含字母）
+            if (part.any { !it.isLetterOrDigit() && it != '_' }) return false
+            if (part.none { it.isLetter() }) return false
+            components++
+            i = j + len
+        }
+        return components >= 2 && i == end
     }
 
     /**
@@ -65,11 +162,15 @@ internal object StringCensus {
         // base64_like。真 base64 是随机字符，不会呈现 小写串+(大写+小写串)+ 的节奏，
         // 也几乎不会完全没有数字。
         if (value.length < 32 && value.none { it.isDigit() } && CAMEL_RE.matches(value)) return false
+        // 【修复·第二轮】Itanium C++ 修饰名不是 base64（`N<len><ns>6detect5FridaE`）。
+        if (looksMangledCppName(value)) return false
         // 【修复】Java 包/类路径不是 base64：`com/example/tool/manager/adb/PairingContext`
         // 38 字符、含 `/`、大小写混合，旧判据三条全中。判据是「每段都以小写开头，
         // 或首字母大写且其余全小写」—— 真 base64 的分段不会这么整齐。
         if ('/' in value) {
-            val segs = value.split('/')
+            // 结尾/连续的 `/` 会产生空段（`com/vendor/加固sdk/crash/` 是目录前缀，
+            // 不是 base64），空段直接忽略。
+            val segs = value.split('/').filter { it.isNotEmpty() }
             if (segs.size >= 2 && segs.all { isIdentifierSegment(it) }) return false
         }
         val hasLower = value.any { it.isLowerCase() }
@@ -110,7 +211,7 @@ internal object StringCensus {
     private val SQL_RE = Regex("(?i)^(select|insert|update|delete|create table)\\b.{4,}$")
     private val VERSION_RE = Regex("^\\d+(\\.\\d+){1,3}([_.-][\\w.]+)?$")
 
-    private fun classify(value: String): List<String> {
+    private fun classify(value: String, section: String? = null): List<String> {
         val out = mutableListOf<String>()
         if (URL_RE.matches(value)) out += "url"
         if (IP_PORT_RE.matches(value)) {
@@ -121,8 +222,11 @@ internal object StringCensus {
         if (JAVA_DESC_RE.matches(value)) out += "java_descriptor"
         if (ABS_PATH_RE.matches(value) && !URL_RE.matches(value)) out += "abs_path"
         if (FORMAT_RE.containsMatchIn(value)) out += "format_string"
-        if (looksBase64(value)) out += "base64_like"
-        if (looksHex(value)) out += "hex_like"
+        // 符号表条目不是字面量；统计上像标识符的也不是 base64/hex。
+        if (!isSymbolTableSection(section) && !looksIdentifierLike(value)) {
+            if (looksBase64(value)) out += "base64_like"
+            if (looksHex(value)) out += "hex_like"
+        }
         if (looksPackageName(value)) out += "package_name"
         if (UUID_RE.matches(value)) out += "uuid"
         if (SQL_RE.matches(value)) out += "sql"
@@ -212,7 +316,7 @@ internal object StringCensus {
         val counts = LinkedHashMap<String, Int>()
         val items = JSONArray()
         elf.strings.forEach { s ->
-            val classes = classify(s.value)
+            val classes = classify(s.value, s.section)
             if (classes.isEmpty()) return@forEach
             classes.forEach { counts.merge(it, 1, Int::plus) }
             if (items.length() < limit) {

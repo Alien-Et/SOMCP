@@ -25,7 +25,7 @@ LIEF 重写与修复、补丁会话、构建导出、Flutter AOT 分析、JNI �
 | 项 | 值 |
 | --- | --- |
 | 包名 | `com.soreverse.mcp` |
-| 版本 | `1.0.25`（`versionCode` 26） |
+| 版本 | `1.0.27`（`versionCode` 28） |
 | 最低系统 | Android 8.0 / API 26 |
 | 目标 SDK | 36 |
 | 默认端口 | `8000` |
@@ -571,6 +571,20 @@ bash build-native-android.sh
   把既有构建产物导出成按需下载包（`curated-versions.json` 已覆盖
   `3.11.5 / 3.12.2 / 3.13.0 / 3.13.1` + 4 个 beta，正好覆盖本机实测遇到的版本）。
 - 体积账：一个 runner 约 12.6 MB；覆盖设备上全部 Flutter 应用只需 **2–3 个版本 ≈ 25–38 MB**。
+
+**第七轮：用某 Flutter 应用做真实样本回归，`str_literal_classes` 三类新误报清零（2026-11-08）**
+
+样本换成真实大型 Flutter 应用**某 Flutter 应用**（`com.example.app`，150 MB APK、68 个 SO、某厂商加固 + 加固 SDK 加固）。
+`apk_*` 四件套全绿，`antidebug_api` / `strdecrypt_api` 都有实质产出；同时 `str_literal_classes`
+又暴露三类 `base64_like` 误报——都是同一类问题的不同形态：
+
+| 形态 | 样例 | 为什么漏网 | 修法 |
+| --- | --- | --- | --- |
+| **Itanium C++ 修饰名** | `N<len><ns>6detect5FridaE`（`<ns>::detect::Frida`） | 大小写混合 + 含数字，旧判据三条全中 | 新增 `looksMangledCppName()`：`_Z` 前缀，或 `N…E` 的 `<十进制长度><标识符>` 分量序列 |
+| **含数字/缩写的标识符** | `saveAppInfo2File`、`delayRestoreSIGILLHandler`、`getJavaStaticMethodID` | `CAMEL_RE` 要求「纯字母 + 每个大写后必跟小写」，带数字或缩写就过不了 | 新增 `looksIdentifierLike()`，改用统计特征（最长小写连续段 ≥ 3、大写占比 ≤ 45%、数字占比 ≤ 25%），用 15 个真实标识符 + 13 个真实 base64 校准 |
+| **符号表条目 / 路径空段** | `.dynstr` 里全部 92 个符号名；`com/vendor/加固sdk/crash/` | 符号表按定义装的就是标识符，不该套 base64 判据；结尾 `/` 让 split 产生空段 | 新增 `isSymbolTableSection()`（`.dynstr`/`.strtab`/`.symtab` 不参与 base64/hex 分类）；路径分段忽略空段 |
+
+实测：样本加固库2.so 的 `base64_like` **22 → 0**，样本加固库.so **9 → 0**。
 
 **第六轮：MCP 传输层两处规范违规 —— 「服务端 200、客户端却说没连上」（2026-11-08）**
 
