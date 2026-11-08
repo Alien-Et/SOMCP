@@ -25,7 +25,7 @@ LIEF 重写与修复、补丁会话、构建导出、Flutter AOT 分析、JNI �
 | 项 | 值 |
 | --- | --- |
 | 包名 | `com.soreverse.mcp` |
-| 版本 | `1.0.23`（`versionCode` 24） |
+| 版本 | `1.0.24`（`versionCode` 25） |
 | 最低系统 | Android 8.0 / API 26 |
 | 目标 SDK | 36 |
 | 默认端口 | `8000` |
@@ -404,6 +404,24 @@ bash build-native-android.sh
 > **注意 Gradle 增量缓存**：修改 Kotlin 源码后若怀疑没有生效，用 `--rerun-tasks` 强制重编。
 > 本项目遇到过 `assembleDebug` 报成功但 dex 里没有新代码的情况。
 
+> **装的包对不对，用 sha256 / CRC 验，不要只看时间戳**。
+>
+> 本项目实测过两次「代码改了、装上却不生效」，根因是**装的是上一版编译产物**（Gradle 增量
+> 编译只重编变动的类，输出目录里留着旧 dex；签名安装时挑错文件就会把旧代码装上去）。
+> 编译+签名+安装三步之后，先确认安装包与产物一致再测：
+>
+> ```bash
+> # 安装包与本地产物
+> sha256sum $(pm path com.soreverse.mcp | head -1 | sed 's/package://')
+> sha256sum somcp_fixed_signed.apk
+> # 单个 dex 的 CRC（尺寸/CRC 对不上就说明 dex 不是这一份）
+> unzip -v <安装包> 'classes3.dex' | awk '/classes3.dex/{print $1,$7}'
+> unzip -v somcp_fixed_signed.apk 'classes3.dex' | awk '/classes3.dex/{print $1,$7}'
+> ```
+>
+> 「App 里搜到新代码字符串」不能作为证据：`pm install` 的安装目录可能留着上一轮的
+> 包，`pm path` 指向的也不一定是你刚装的那个（APK 更新时目录名会变）。
+
 ### Release 优化
 
 - R8 代码压缩与混淆
@@ -554,7 +572,82 @@ bash build-native-android.sh
   `3.11.5 / 3.12.2 / 3.13.0 / 3.13.1` + 4 个 beta，正好覆盖本机实测遇到的版本）。
 - 体积账：一个 runner 约 12.6 MB；覆盖设备上全部 Flutter 应用只需 **2–3 个版本 ≈ 25–38 MB**。
 
+**第五轮：ELF / APK 审计工具全部失真，用真实样本逐个复现并修复（2026-11-08）**
+
+本轮用 某开源测试应用（`com.example.tool`）的 `样本A.so` / `样本C.so` / `样本B.so`
+和真实 `base.apk` 做样本，把 10 个此前「看起来在工作、实际结论是错的」的 bug 全部暴露并修掉。
+
+- **`apk_sig_verify` / `apk_cert_info` / `apk_abi_coverage` / `apk_zip_anomaly` 四件套此前全是假的**，
+  根因是三处字节解析错误：
+  - `readEntry` 用 `Inflater()` 解 ZIP 条目：ZIP 的 deflate 是 **raw deflate**（无 zlib 头），
+    默认 `nowrap=false` 会去找 2 字节 zlib 头并抛 `incorrect header check`，被 catch 成 `null`
+    ⇒ **所有压缩条目都读不出来**。后果是 `abiCoverage` 的 `parsedBytes` 恒 0、`files[]` 里没有
+    `bits/architecture/soname`；`cert_info` 读不到 `META-INF/*.RSA` 兜底证书；ZIP 对齐检查全部失效。
+    改为 `Inflater(true)`。
+  - `abiCoverage` 的默认预算 `2 * 1024 * 1024 * 1024` 声明为 `Int`，溢出成 `-2147483648`，
+    `parsedTotal + e.usize <= maxParsedBytes` 恒 false ⇒ 一个 SO 都不解析。签名改 `Long`，
+    并把「首字节 0x7F」的弱判据换成完整 ELF magic（`7F 45 4C 46`），非 ELF 条目明确标 `not_elf`。
+  - `signerBlocks` 漏读 v2/v3 block value 最外层的 sequence 长度前缀：真实布局是
+    `uint32 signersSeqLen | (uint32 signerLen + signer)*`，旧实现从偏移 0 读长度把整段当一个 signer，
+    切出来的 signer 起点整体错 4 字节 ⇒ `parseSigner` 切完 signedData 就用尽缓冲区直接 `return null`。
+    这是 `certCount:0` 和 `signers:[]` 的唯一原因。
+  - digest / signature 记录漏读 `innerLen` 字段：两条记录都是 `len | algId | innerLen | data` 四段式，
+    旧实现从 `+8` 切到 `+4+len`，把 `innerLen` 拼进了数据前面 ⇒ digest 的 `expected` 变成
+    `20000000c3e6fd76…`（与 computed 永不相等，每个包都判 `digest_mismatch`）、RSA 签名字节多 4 字节
+    前缀（验签必然 `invalid`）。同轮把 `DIGEST_CHUNKED_SHA256/SHA512` 从 `0x0301/0x0302` 订正为
+    规范值 **`0x0103/0x0104`**（旧值让 digest 从不参与比对、还把 0x0103 误当 DSA 算法）。
+    签名覆盖范围经 openssl 双向实测确认为**裸 signed data**（不加长度前缀）。
+  - SONAME 冲突检测未按 ABI 分组：同一个库在 arm64-v8a / armeabi-v7a / x86 / x86_64 下大小天然不同，
+    旧实现把所有 ABI 的 size 混进一个集合 ⇒ 任何多 ABI 的 APK 都误报
+    `soname X maps to multiple sizes`。改为按 `abi/soname` 分组。
+  - 实测对照（样本 `base.apk`，2.5 MB）：修前 `verdict=parsed_unverified` / `certCount=0` /
+    `parsedBytes=0` / `findings=[2 条误报]`；修后 `verdict=verified`（证书 `CN=<vendor>`，
+    SHA-256 `268b5590…` 与 `apksigner` 一致）、`certCount=1`、`parsedBytes=529768`、`findings=[]`、
+    12 个 SO 全部解出 bits/architecture/soname。
+- **`elf_hash_tables` 在有 `DT_GNU_HASH` 的 SO 上报 `hasGnu:false`**：`bytesForVaddr` 要求
+  「请求的整个窗口完整落在文件内」才返回数据，而调用方传的是**上界**（DT_GNU_HASH 512 KiB、
+  DT_HASH 64 KiB），真实哈希表往往只有几十字节 ⇒ 存在的表被判定为不存在。改为按上界处理
+  （截到文件尾、至少 4 字节可读）。实测 `样本A.so` 修前 `hasGnu:false`，修后
+  `nbuckets:1 / symoffset:63 / bloomSize:1 / emptyBuckets:1`。
+- **`code_padding_caves` 把结构性节当成可复用空洞**：旧实现只跳过 `SHT_NULL/SHT_NOBITS`，于是把
+  `.dynsym` 的 62 段 19 字节零值、`.dynamic` 的结束标记、`.got`/`.got.plt` 未用槽、`.rela.*` 的
+  addend、`.eh_frame`、`.gnu.version_r`、`.note.android.ident`、`.data` 全报成「可 patch 空洞」——
+  在 `样本A.so` 上 69 个候选里 60+ 是 `.dynsym` 假空洞，写进去会破坏符号解析与重定位。
+  新增 `NON_CAVE_SECTION_TYPES` / `NON_CAVE_SECTION_NAMES` 与 `isStructuralSection()`，按
+  ELF 节类型 + 节名前缀双重过滤。实测：`样本A.so` / `样本B.so` 的 `caveCount` 归 0
+  （确实没有 ≥16 字节填充），`样本C.so` 只报 7 个真空洞（`.rodata` × 5、`.text` × 2），
+  `patch_cave_finder` 给出 2 个 `safeForPatch=true` 候选。
+- **`import_api` 把所有导入符号都归到第一个 `DT_NEEDED` 库**：`DT_VERNEED` 的常量写成了
+  `0x6FFFFFFF`，而那是 **`DT_VERNEEDNUM`**，正确值是 `0x6FFFFFFE` ⇒ `parseVerneed` 恒空 ⇒
+  `mode` 恒为 `needed_heuristic`。另加 `SymbolInfo.tableIndex` 字段（`ElfModels.kt` / `ElfParser.kt`），
+  用 dynsym 的**原始下标**查 versym —— 旧代码用过滤后的列表下标，符号一被筛掉就整体错位。
+  实测：`样本C` / `样本A` 的 `mode` 都是 `gnu_version_r`，`libc.so` n=33/59、`liblog.so` n=3/1
+  分别正确归属。
+- **`analyze_string_xrefs` 的 locator 坐标系猜错**：调用方传的是 vaddr，而 Rizin 的 `i` 命令是
+  文件偏移。`translate_address` 补上（歧义时报错并给两个候选），`engine_find_function_at` 也支持
+  vaddr 自动识别。实测 `'so_string:样本C.so!a24'` / `'a24'` / `'0xa24'` / `'0x1100'` 全部 ok。
+- **4 个工具此前直接 HTTP 500（裸异常逃出 dispatch）**：`workspace_export` / `edit_hex` /
+  `edit_asm` / `edit_symbol`。修法：`McpHttpServer` dispatch 层加 `try/catch`（`CancellationException`
+  透传）统一返回 `TOOL_EXECUTION_FAILED` + `hint`；`ToolCatalog` 4 处 `a.getJSONArray("edits")` 改
+  `optJSONArray` 并在缺失时返回 `INVALID_ARGUMENT`；`workspace_export` 补 `workspaceId` 非空校验
+  （`WORKSPACE_REQUIRED`）。
+- **`str_literal_classes` 的 `base64_like` 把 Java 标识符判成 base64**：`nativeInitCipher`(16) /
+  `nativeConstructor`(17) 刚好越过 `BASE64_RE` 的 16 字符门槛且「小写+大写」被算成「大小写混合」；
+  `com/example/tool/manager/adb/PairingContext`(38) 含 `/` 且大小写混合。新增 `CAMEL_RE`（纯字母无数字的
+  驼峰串一律排除）与 `isIdentifierSegment()`（含 `/` 且每段都是合法 Java 标识符形态的判为包路径）。
+  同时补源码扩展名黑名单，`hkdf.cc.inc` / `digest.cc.inc` / `e_aes.cc.inc` 不再被标 `package_name`。
+  实测 `base64_like` 从 3 个降到 **0**。
+- **`strdecrypt_api` 的候选里混入半字节查表（40 → 2）**：第一轮的 `SCAN_MIN_BYTES=10` /
+  `SCAN_MIN_ENTROPY=3.5` 挡不住 `0x01 02 03 00 05 06 07 04 ...` 这类 AES/GF(2^8) nibble 表——
+  它取值只有 `0x00..0x0F` 十六个，4 bit 均匀分布，**熵恰好顶到 4.0**，比真密文门槛还高。
+  新增 `spansByteSpace()`，要求 `maxByte >= 0x80` 且 `max - min >= 0x80`。实测 `blobCount`
+  **40 → 2**，剩下的 13 字节 / 17 字节候选 `maxByte` 分别是 `0xFF` / `0xFD`、可打印率 0。
+- **回归**：81 个工具空参数探测 = `✅ 8 正常 / ⚠️ 72 业务错误（服务活着）/ ❌ 0 传输异常`；
+  真实样本 31 项功能断言 **31/31 通过**；`edit_hex` → `session_history check` →
+  `patch_apply_verify`（`verdict: pass`，`changedBytes: 4`）→ `build_so`（sha256 与
+  `newTargetVersion` 一致）编辑闭环实测通过。
 ---
+
 
 ## 许可证与再分发
 

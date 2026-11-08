@@ -73,6 +73,34 @@ private const val TEXTUAL_PUNCTUATION = " .:/_-_,!?&=+"
 /** Ciphertext runs shorter than this are too short to score meaningfully. */
 private const val MIN_BLOB_BYTES = 6
 
+/**
+ * 【修复】扫描阶段的噪声门槛。
+ *
+ * `MIN_BLOB_BYTES = 6` 只保证「够长到能算熵」，但 6–8 字节的 run 在 `.rodata` 里
+ * 绝大多数是 **float/double 常量、跳转表条目、指令立即数** —— 实测 样本C.so 的
+ * 40 个候选里 24 个是 6–8 字节、熵 2.5–3.0 的短串，没有一个是真密文。
+ *
+ * 真正的加密字符串至少 8 字节（DES 块）且熵接近满值；短于 [SCAN_MIN_BYTES] 或
+ * 熵低于 [SCAN_MIN_ENTROPY] 的 run 在**扫描阶段**就被跳过，而不是靠调用方自己筛。
+ * 显式 `decrypt` 动作不受此限制（用户指定了具体地址就要处理）。
+ */
+private const val SCAN_MIN_BYTES = 10
+private const val SCAN_MIN_ENTROPY = 3.5
+
+/**
+ * 【修复】熵门槛挡不住「半字节查表」。
+ *
+ * AES/GF(2^8) 的 nibble 表（`01 02 03 00 05 06 07 04 ...`）取值只有 `0x00..0x0F`
+ * 十六个，4 bit 均匀分布 → 熵恰好顶到 4.0，比真密文的 3.5 门槛还高。实测 样本C.so
+ * 剩下的 10 个候选里 8 个就是这类表（`.rodata` 的 `0x2804..0x28b1`，maxByte 全 `0x0F`）。
+ *
+ * 真正的密文/密钥**铺满整个字节空间**：最高位至少出现一次（`maxByte >= 0x80`），
+ * 且取值范围跨过半数字节（`max - min >= 0x80`）。这两条对 nibble 表、小整数常量表、
+ * 索引数组一击必杀，对真随机材料零误伤。
+ */
+private const val CIPHER_MIN_HIGH_BIT = 0x80
+private const val CIPHER_MIN_SPREAD = 0x80
+
 private const val MAX_BLOB_BYTES = 4096
 
 /** How many verified keys to report per blob; 1280 sweeps, ranked, then cut. */
@@ -346,12 +374,45 @@ internal object StringDecryptor {
      * filter — short strings have low entropy even when encrypted, so gating on
      * it would drop exactly the short literals that matter most.
      */
+    /**
+     * 密文是否铺满字节空间（见 [CIPHER_MIN_HIGH_BIT] / [CIPHER_MIN_SPREAD]）。
+     *
+     * 半字节查表、小整数常量表、索引数组的 maxByte 只有 `0x0F` 上下，跨不出高半区；
+     * 真密文/密钥的 max-min 必然横跨大半个字节空间。
+     */
+    private fun spansByteSpace(slice: ByteArray): Boolean {
+        if (slice.isEmpty()) return false
+        var lo = 0xFF
+        var hi = 0
+        for (b in slice) {
+            val v = b.toInt() and 0xFF
+            if (v < lo) lo = v
+            if (v > hi) hi = v
+        }
+        return hi >= CIPHER_MIN_HIGH_BIT && (hi - lo) >= CIPHER_MIN_SPREAD
+    }
+
     fun findBlobs(bytes: ByteArray, elf: ElfFile, limit: Int): JSONArray {
         val out = JSONArray()
         val max = limit.coerceIn(1, 200)
         elf.sections
             .filter { it.size > 0 && it.flags and 0x2L != 0L && it.flags and 0x4L == 0L }
             .filter { it.name != ".dynstr" && it.name != ".shstrtab" }
+            // 【修复】结构性节不是「加密字符串」的候选池：`.eh_frame` 是 CFI 指令流、
+            // `.dynamic` 是 tag/value 表、`.got*` 是地址槽、`.rela.*` 是重定位表、
+            // `.note*` 是构建标识、`.gnu.version*` 是版本号数组、`.data.rel.ro*` 是
+            // 只读指针表。旧实现只排除 `.dynstr`/`.shstrtab`，于是在 样本C.so 上
+            // 报出的 40 个 blob 里第一名是 `.eh_frame` 的 17 字节 —— 熵 3.7、
+            // 可打印率 0.12，纯粹是 CFI 编码，不是密文。
+            .filter { section ->
+                val n = section.name
+                !(n.startsWith(".eh_frame") || n.startsWith(".rela.") || n.startsWith(".rel.") ||
+                    n.startsWith(".gnu.") || n.startsWith(".note") || n.startsWith(".ARM.") ||
+                    n.startsWith(".data.rel.ro") ||
+                    n == ".dynamic" || n == ".got" || n == ".got.plt" ||
+                    n == ".init_array" || n == ".fini_array" || n == ".preinit_array" ||
+                    n == ".dynsym" || n == ".symtab" || n == ".strtab" || n == ".comment")
+            }
             .sortedBy { it.name }
             .forEach { section ->
                 val start = section.offset.toInt()
@@ -374,17 +435,23 @@ internal object StringDecryptor {
                     val len = j - i
                     if (len >= MIN_BLOB_BYTES) {
                         val slice = bytes.copyOfRange(i, minOf(j, i + MAX_BLOB_BYTES))
-                        out.put(
-                            JSONObject()
-                                .put("section", section.name)
-                                .put("va", "0x${(section.addr + (i - section.offset)).toString(16)}")
-                                .put("fileOffset", "0x${i.toString(16)}")
-                                .put("length", len)
-                                .put("truncated", len > slice.size)
-                                .put("entropy", entropy(slice))
-                                .put("printableRatio", printableRatio(slice))
-                                .put("headHex", PatchByteUtils.hexBytes(slice.copyOfRange(0, minOf(24, slice.size))))
-                        )
+                        // 【修复】扫描阶段过滤掉「太短 / 熵太低」的 run：6–8 字节、
+                        // 熵 2.5–3.0 的字节串在 .rodata 里几乎都是 float/double 常量
+                        // 或跳转表条目，不是密文。真正的密文至少 10 字节且熵接近满值。
+                        val ent = entropy(slice)
+                        if (len >= SCAN_MIN_BYTES && ent >= SCAN_MIN_ENTROPY && spansByteSpace(slice)) {
+                            out.put(
+                                JSONObject()
+                                    .put("section", section.name)
+                                    .put("va", "0x${(section.addr + (i - section.offset)).toString(16)}")
+                                    .put("fileOffset", "0x${i.toString(16)}")
+                                    .put("length", len)
+                                    .put("truncated", len > slice.size)
+                                    .put("entropy", ent)
+                                    .put("printableRatio", printableRatio(slice))
+                                    .put("headHex", PatchByteUtils.hexBytes(slice.copyOfRange(0, minOf(24, slice.size))))
+                            )
+                        }
                     }
                     i = j + 1
                 }

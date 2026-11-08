@@ -24,8 +24,15 @@ internal object ApkSigTools {
     private const val EOCD_SIG = 0x06054b50L
     private const val V2_BLOCK_ID = 0x7109871aL
     private const val V3_BLOCK_ID = 0xf05368c0L
-    private const val DIGEST_CHUNKED_SHA256 = 0x0301L
-    private const val DIGEST_CHUNKED_SHA512 = 0x0302L
+
+    // 【修复】v2/v3 的「内容摘要算法 ID」真实取值是 0x0103 / 0x0104
+    // （APK Signature Scheme v2 规范：SIG_ALG 与 DIGEST 共用同一套 algorithm id，
+    //  CHUNKED_SHA256 = 0x0103，CHUNKED_SHA512 = 0x0104）。
+    // 旧值 0x0301 / 0x0302 是 DSA-with-SHA256 / 一个不存在的编号，导致
+    //  - digest 记录被标成 "not_recomputed_0x103"，内容摘要从不参与比对；
+    //  - 验签时把 0x0103 当成 DSA 算法 → "invalid"（实际 apksigner 判定 Verifies）。
+    private const val DIGEST_CHUNKED_SHA256 = 0x0103L
+    private const val DIGEST_CHUNKED_SHA512 = 0x0104L
 
     private fun u16(b: ByteArray, o: Int): Int {
         if (o < 0 || o + 2 > b.size) return 0
@@ -48,6 +55,12 @@ internal object ApkSigTools {
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun hexStr(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+
+    /** ELF magic：7F 45 4C 46（"\x7fELF"）。 */
+    private fun isElfMagic(b: ByteArray): Boolean =
+        b.size >= 4 &&
+            b[0] == 0x7F.toByte() && b[1] == 0x45.toByte() &&
+            b[2] == 0x4C.toByte() && b[3] == 0x46.toByte()
 
     // ── ZIP layout ──
 
@@ -118,7 +131,12 @@ internal object ApkSigTools {
         return when (entry.method) {
             0 -> raw
             8 -> try {
-                val inflater = Inflater()
+                // 【修复】ZIP 条目的 deflate 是 **raw deflate**（无 zlib 头 / 无 adler32），
+                // `Inflater()` 默认 nowrap=false 会去找 2 字节 zlib 头，报
+                // "incorrect header check" 后被 catch 成 null —— 于是所有压缩条目都读不出来。
+                // apk_abi_coverage 的 parsedBytes 恒 0、apk_cert_info 读不到 META-INF
+                // 证书、zipAnomalies 的 .so 检查全部失效，根因都在这里。
+                val inflater = Inflater(true)
                 inflater.setInput(raw)
                 val out = ByteArrayOutputStream()
                 val buf = ByteArray(64 * 1024)
@@ -176,12 +194,31 @@ internal object ApkSigTools {
         return v
     }
 
+    /**
+     * Split a v2/v3 block value into its individual signer blocks.
+     *
+     * 【修复】旧实现直接从 value 的偏移 0 开始读长度、把整段当成一个 signer，漏掉了
+     * APK Signature Scheme v2/v3 的**外层 sequence 长度前缀**。真实布局是：
+     *
+     *     value = uint32 signersSequenceLen
+     *             ( uint32 signerLen + signerBytes ) *
+     *
+     * 于是旧实现把 `signersSequenceLen` 当成第一个 signer 的长度，切出来的「signer」
+     * 起点正好错 4 字节 —— 它的第一个 u32 其实是 signedData 的长度，`parseSigner`
+     * 按这个长度切完 signedData 就正好用尽整个缓冲区，随后 `q + 4 > signer.size`
+     * 成立直接返回 null。这就是 `apk_cert_info` 报 `certCount:0`、
+     * `apk_sig_verify` 报 `signers:[]` + `verdict:parsed_unverified` 的原因。
+     */
     private fun signerBlocks(value: ByteArray): List<ByteArray> {
         val signers = mutableListOf<ByteArray>()
-        var p = 0
-        while (p + 4 <= value.size && signers.size <= 64) {
+        if (value.size < 4) return signers
+        val seqLen = u32(value, 0).toInt()
+        // 只信任声明长度内的字节；声明长度异常时退化为「用满整个 value」。
+        val limit = if (seqLen in 0..(value.size - 4)) 4 + seqLen else value.size
+        var p = 4
+        while (p + 4 <= limit && signers.size <= 64) {
             val len = u32(value, p).toInt()
-            if (len <= 0 || p + 4 + len > value.size) break
+            if (len <= 0 || p + 4 + len > limit) break
             signers += value.copyOfRange(p + 4, p + 4 + len)
             p += 4 + len
         }
@@ -220,8 +257,14 @@ internal object ApkSigTools {
         var r = 0
         while (r + 4 <= sigsRaw.size) {
             val sigLen = u32(sigsRaw, r).toInt()
-            if (sigLen <= 4 || r + 4 + sigLen > sigsRaw.size) break
-            signatures += u32(sigsRaw, r + 4) to sigsRaw.copyOfRange(r + 8, r + 4 + sigLen)
+            if (sigLen <= 8 || r + 4 + sigLen > sigsRaw.size) break
+            // 【修复】v2/v3 的 signature 记录是 `len | algId | innerLen | sig` 四段式
+            // （apksig 的 V2SchemeSigner 依次 putInt(algId) / putInt(sig.length) / put(sig)）。
+            // 旧实现从 +8 切到 +4+sigLen，把 innerLen 也当成了签名数据的前 4 字节，
+            // 于是 RSA 验签必然失败。
+            val innerLen = u32(sigsRaw, r + 8).toInt()
+            if (innerLen <= 0 || r + 12 + innerLen > sigsRaw.size) break
+            signatures += u32(sigsRaw, r + 4) to sigsRaw.copyOfRange(r + 12, r + 12 + innerLen)
             r += 4 + sigLen
         }
         if (q + 4 > signer.size) return null
@@ -237,8 +280,14 @@ internal object ApkSigTools {
             var t = 0
             while (t + 4 <= dRaw.size) {
                 val recLen = u32(dRaw, t).toInt()
-                if (recLen <= 4 || t + 4 + recLen > dRaw.size) break
-                digests += u32(dRaw, t + 4) to dRaw.copyOfRange(t + 8, t + 4 + recLen)
+                if (recLen <= 8 || t + 4 + recLen > dRaw.size) break
+                // 【修复】digest 记录同样是 `len | algId | innerLen | digest` 四段式。
+                // 旧实现从 +8 切到 +4+recLen，把 innerLen（4 字节）拼进了摘要前面，
+                // 所以 expected 变成 "20000000c3e6fd76…"，与 computed 永不相等，
+                // 每个签名包都被判 digest_mismatch。
+                val innerLen = u32(dRaw, t + 8).toInt()
+                if (innerLen <= 0 || t + 12 + innerLen > dRaw.size) break
+                digests += u32(dRaw, t + 4) to dRaw.copyOfRange(t + 12, t + 12 + innerLen)
                 t += 4 + recLen
             }
             s += 4 + dLen
@@ -254,6 +303,10 @@ internal object ApkSigTools {
                 t += 4 + certLen
             }
         }
+        // 【验证】v2/v3 的签名覆盖范围是 **裸 signed data**（不含外层 uint32 长度前缀）。
+        // 已用 openssl 对真实 APK 双向验证：bare → "Verified OK"，
+        // prefixed → "bad signature"。apksig 的 V2SchemeVerifier 同样直接喂裸 signedData。
+        // （真正的 invalid 根因是签名记录的 innerLen 被拼进了签名字节，见上面的修复。）
         return SignerData(minSdk, maxSdk, digests, certs, signatures, signedData)
     }
 
@@ -581,7 +634,11 @@ internal object ApkSigTools {
     private val KNOWN_ABIS = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 
     // 【魔改】128 MiB → 2 GiB
-    fun abiCoverage(apk: ByteArray, maxParsedBytes: Int = 2 * 1024 * 1024 * 1024): JSONObject {
+    // 【修复】旧签名 `maxParsedBytes: Int = 2 * 1024 * 1024 * 1024` 在 Int 下溢出成
+    // -2147483648，导致 `parsedTotal + e.usize <= maxParsedBytes` 恒为 false，
+    // 一个 SO 都不会被 ELF 解析 —— `parsedBytes` 恒 0、`files[]` 里没有 bits /
+    // architecture / soname。改成 Long 后预算才是真的 2 GiB。
+    fun abiCoverage(apk: ByteArray, maxParsedBytes: Long = 2L * 1024 * 1024 * 1024): JSONObject {
         val layout = parseZipLayout(apk)
             ?: return err("APK_INVALID", "not a ZIP: EOCD not found")
         val libs = layout.entries.filter { Regex("^lib/[^/]+/[^/]+\\.so$").matches(it.name) && !it.name.endsWith("/") }
@@ -597,8 +654,11 @@ internal object ApkSigTools {
             entries.forEach { e ->
                 val file = JSONObject().put("name", e.name.substringAfterLast('/')).put("size", e.usize)
                 if (parsedTotal + e.usize <= maxParsedBytes) {
-                    val data = readEntry(apk, e, (maxParsedBytes - parsedTotal).toInt().coerceAtLeast(0))
-                    if (data != null && data.size >= 5 && data[0] == 0x7f.toByte()) {
+                    val remaining = (maxParsedBytes - parsedTotal).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    val data = readEntry(apk, e, remaining)
+                    // 【修复】旧判断只看首字节 0x7F，会把任意以 0x7F 开头的压缩流当 ELF；
+                    // 现在核对完整 ELF magic。
+                    if (data != null && data.size >= 16 && isElfMagic(data)) {
                         parsedTotal += data.size
                         val elf = runCatching { ElfParser(data).parse() }.getOrNull()
                         if (elf != null) {
@@ -608,6 +668,8 @@ internal object ApkSigTools {
                         } else {
                             file.put("elfParse", "failed")
                         }
+                    } else if (data != null) {
+                        file.put("elfParse", "not_elf")
                     }
                 }
                 files.put(file)
@@ -621,17 +683,24 @@ internal object ApkSigTools {
         if (has32 && !has64) findings.put("32-bit only: no arm64-v8a/x86_64 libraries")
         if (has64 && !has32) findings.put("64-bit only: legacy 32-bit devices unsupported")
         KNOWN_ABIS.filter { it !in abis }.forEach { findings.put("missing ABI: $it") }
+        // 【修复】SONAME 冲突检测必须按 ABI 分组：同一个库在 arm64-v8a / armeabi-v7a /
+        // x86 / x86_64 下大小天然不同，旧实现把所有 ABI 的 size 混进一个集合，
+        // 于是任何一个多 ABI 的库都会报「soname X maps to multiple sizes」。
+        // 真正的冲突是「同一 ABI 内同名 SONAME 却有不同大小」。
         val sonames = HashMap<String, MutableSet<Long>>()
         for (i in 0 until items.length()) {
+            val abi = items.getJSONObject(i).optString("abi", "")
             val files = items.getJSONObject(i).getJSONArray("files")
             for (j in 0 until files.length()) {
                 val f = files.getJSONObject(j)
                 val soname = f.optString("soname", "")
-                if (soname.isNotBlank()) sonames.getOrPut(soname) { mutableSetOf() } += f.getLong("size")
+                if (soname.isNotBlank()) {
+                    sonames.getOrPut("$abi/$soname") { mutableSetOf() } += f.getLong("size")
+                }
             }
         }
-        sonames.filterValues { it.size > 1 }.forEach { (name, sizes) ->
-            findings.put("soname $name maps to multiple sizes: $sizes")
+        sonames.filterValues { it.size > 1 }.forEach { (key, sizes) ->
+            findings.put("soname $key maps to multiple sizes: $sizes")
         }
         return JSONObject()
             .put("abis", JSONArray(abis))

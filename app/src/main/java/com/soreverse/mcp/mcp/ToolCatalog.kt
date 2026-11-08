@@ -155,7 +155,14 @@ object ToolCatalog {
         }
 
         override fun handle(ctx: ToolContext, args: JSONObject): JSONObject {
-            val (bytes, architecture) = ctx.engine.snapshotBytes(args.str("workspaceId"), args.str("editSessionId"))
+            // 【修复 H1 配套】缺 workspaceId 时给精确错误码，而不是让
+            // snapshotBytes 的 IllegalStateException 冒到 dispatch 兜底
+            // （那样客户端只看到 TOOL_EXECUTION_FAILED，不够可操作）。
+            val workspaceId = args.str("workspaceId")
+            if (workspaceId.isBlank()) {
+                return err("WORKSPACE_REQUIRED", "workspaceId is required", "workspaceId")
+            }
+            val (bytes, architecture) = ctx.engine.snapshotBytes(workspaceId, args.str("editSessionId"))
             val maxBytes = args.intValue("maxBytes", 32 * 1024 * 1024).coerceAtLeast(1024)
             if (bytes.size > maxBytes) {
                 return err(
@@ -725,7 +732,11 @@ object ToolCatalog {
                 a.str("workspaceId"),
                 a.str("editSessionId"),
                 a.str("locator"),
-                a.getJSONArray("edits"),
+                a.optJSONArray("edits") ?: return@EngineToolHandler err(
+                    "INVALID_ARGUMENT",
+                    "edits[] is required for this mode (see the tool schema)",
+                    "edits"
+                ),
                 a.bool("dryRun")
             )
         }
@@ -756,7 +767,11 @@ object ToolCatalog {
             a.str("workspaceId"),
             a.str("editSessionId"),
             a.str("locator"),
-            a.getJSONArray("edits"),
+            a.optJSONArray("edits") ?: return@EngineToolHandler err(
+                "INVALID_ARGUMENT",
+                "edits[] is required for this mode (see the tool schema)",
+                "edits"
+            ),
             a.bool("dryRun")
         )
     }
@@ -819,7 +834,11 @@ object ToolCatalog {
                     a.str("workspaceId"),
                     a.str("editSessionId"),
                     a.str("locator"),
-                    a.getJSONArray("edits"),
+                    a.optJSONArray("edits") ?: return@EngineToolHandler err(
+                    "INVALID_ARGUMENT",
+                    "edits[] is required for this mode (see the tool schema)",
+                    "edits"
+                ),
                     a.bool("dryRun")
                 )
             }
@@ -828,7 +847,11 @@ object ToolCatalog {
                 a.str("workspaceId"),
                 a.str("editSessionId"),
                 a.str("locator"),
-                a.getJSONArray("edits"),
+                a.optJSONArray("edits") ?: return@EngineToolHandler err(
+                    "INVALID_ARGUMENT",
+                    "edits[] is required for this mode (see the tool schema)",
+                    "edits"
+                ),
                 a.bool("dryRun")
             )
         }

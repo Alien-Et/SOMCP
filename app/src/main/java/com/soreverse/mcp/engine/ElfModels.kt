@@ -22,7 +22,16 @@ data class SymbolInfo(
     val value: Long,
     val size: Long,
     val imported: Boolean,
-    val exported: Boolean
+    val exported: Boolean,
+    /**
+     * 该符号在所属符号表（`.dynsym` / `.symtab`）里的**原始下标**。
+     *
+     * 【修复】`.gnu.version`（SHT_GNU_versym）是**按下标与 `.dynsym` 平行**的数组：
+     * versym[i] 描述 dynsym[i] 的版本。`import_api` 之前用「过滤后的 imported 列表下标」
+     * 去索引 versym，两套下标体系不同 ⇒ 版本号整体错位，`parseVerneed` 的映射查不中，
+     * 于是每个 SO 都退化成 `needed_heuristic`、把所有导入都归到 `DT_NEEDED` 的第一个库。
+     */
+    val tableIndex: Int = -1
 )
 
 data class RelocInfo(val section: String, val offset: Long, val type: Long, val symbol: String, val addend: Long)

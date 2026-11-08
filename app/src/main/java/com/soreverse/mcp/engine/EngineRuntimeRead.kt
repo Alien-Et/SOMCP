@@ -863,56 +863,73 @@ internal fun EngineRuntime.xrefSymbol(workspaceId: String, editSessionId: String
 
 internal fun EngineRuntime.xrefString(workspaceId: String, editSessionId: String, locator: String, limit: Int): JSONObject = guarded {
     val elf = elfFor(workspaceId, editSessionId)
-    val targetOffset =
-        locator.substringAfterLast('!').toLongOrNull(16)
-            ?: return@guarded err("INVALID_LOCATOR", "Invalid string locator")
-    val targetVa = elf.sections.firstOrNull {
-        targetOffset >= it.offset &&
-            targetOffset < it.offset + it.size
-    }?.let { it.addr + (targetOffset - it.offset) }
+    val raw = locator.substringAfterLast('!').trim()
+    if (raw.isEmpty()) {
+        return@guarded err(
+            "INVALID_LOCATOR",
+            "String locator is empty. Pass the locator from search_strings (e.g. \"so_string:lib.so!a24\") " +
+                "or a bare hex offset/VA (e.g. \"a24\" / \"0xa24\" / \"0x1100\").",
+            "locator", locator
+        )
+    }
+    // 【修复】旧实现用 `toLongOrNull(16)`，把 "0xa24" 这种带前缀的十六进制地址判成非法，
+    // 而工具描述里明确写着 locator 可以是 "entry reference or hex VA"。
+    // 另外把裸数值同时按「文件偏移」和「虚拟地址」两种坐标轴解释：
+    // 先试偏移命中哪个节，不命中再试 VA，两者都命中时以 VA 为准（对外语义更常用）。
+    val parsed = raw.removePrefix("0x").removePrefix("0X")
+        .takeIf { it.isNotEmpty() && it.all { c -> c.isDigit() || c in 'a'..'f' || c in 'A'..'F' } }
+        ?.toLongOrNull(16)
+        ?: return@guarded err(
+            "INVALID_LOCATOR",
+            "Cannot parse \"$raw\" as a hex offset/VA. Expected the string locator from search_strings " +
+                "(so_string:<file>!<hex>) or a bare hex number such as \"0x1100\".",
+            "locator", locator
+        )
+
+    // 坐标轴判定：先按文件偏移找所在节，再按 VA 找所在节。
+    val asOffset = elf.sections.firstOrNull { parsed >= it.offset && parsed < it.offset + it.size }
+    val asVa = elf.sections.firstOrNull { it.addr != 0L && parsed >= it.addr && parsed < it.addr + it.size }
+    val (fileOffset, targetVa, axis) = when {
+        asVa != null && (asOffset == null || asVa.addr != asVa.offset) ->
+            Triple(asVa.offset + (parsed - asVa.addr), parsed, "virtual_address")
+        asOffset != null -> Triple(parsed, asOffset.addr + (parsed - asOffset.offset), "file_offset")
+        else -> return@guarded err(
+            "LOCATOR_OUT_OF_RANGE",
+            "\"0x${parsed.toString(16)}\" is not inside any section of ${elf.sections.size} sections. " +
+                "File is ${dataFor(workspaceId, editSessionId).size} bytes.",
+            "locator", locator
+        )
+    }
+
     val refs = JSONArray()
-    if (targetVa != null) {
-        val bytes = dataFor(workspaceId, editSessionId)
-        val pattern =
-            byteArrayOf(
-                (targetVa and 0xff).toByte(),
-                ((targetVa shr 8) and 0xff).toByte(),
-                (
-                    (
-                        targetVa shr
-                            16
-                        ) and
-                        0xff
-                    ).toByte(),
-                ((targetVa shr 24) and 0xff).toByte()
+    val bytes = dataFor(workspaceId, editSessionId)
+    val pattern =
+        byteArrayOf(
+            (targetVa and 0xff).toByte(),
+            ((targetVa shr 8) and 0xff).toByte(),
+            ((targetVa shr 16) and 0xff).toByte(),
+            ((targetVa shr 24) and 0xff).toByte()
+        )
+    var i = 0
+    while (i <= bytes.size - pattern.size && refs.length() < limit) {
+        if (pattern.indices.all { bytes[i + it] == pattern[it] }) {
+            refs.put(
+                JSONObject()
+                    .put("type", "literal_address")
+                    .put("address", hex(i.toLong()))
+                    .put("confidence", "medium")
             )
-        var i = 0
-        while (i <= bytes.size - pattern.size && refs.length() < limit) {
-            if (pattern.indices.all {
-                    bytes[i + it] == pattern[it]
-                }
-            ) {
-                refs.put(
-                    JSONObject().put(
-                        "type",
-                        "literal_address"
-                    ).put(
-                        "address",
-                        hex(i.toLong())
-                    ).put("locator", locator).put("confidence", "medium")
-                )
-            }
-            i++
         }
+        i++
     }
     ok(
-        JSONObject().put(
-            "locator",
-            locator
-        ).put(
-            "references",
-            refs
-        ).put("pagination", pagination(false, null, refs.length(), limit, refs.length()))
+        JSONObject()
+            .put("locator", locator)
+            .put("resolvedOffset", hex(fileOffset))
+            .put("resolvedVa", hex(targetVa))
+            .put("addressAxis", axis)
+            .put("references", refs)
+            .put("pagination", pagination(false, null, refs.length(), limit, refs.length()))
     )
 }
 

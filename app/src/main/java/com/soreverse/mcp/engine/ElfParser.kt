@@ -131,7 +131,10 @@ class ElfParser(private val data: ByteArray) {
                 dest +=
                     SymbolInfo(
                         name, bind, typ, vis, shndx, value, size, shndx == 0,
-                        bind != "LOCAL" && shndx != 0
+                        bind != "LOCAL" && shndx != 0,
+                        // 【修复】记下符号在所属符号表里的原始下标，
+                        // 供 .gnu.version（versym）按下标平行查表。
+                        tableIndex = i
                     )
             }
         }

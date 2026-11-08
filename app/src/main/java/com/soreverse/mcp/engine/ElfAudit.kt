@@ -18,6 +18,56 @@ internal object ElfAudit {
     private const val SHT_NULL = 0L
     private const val SHT_NOBITS = 8L
 
+    // 【修复】结构性节过滤：这些节里的 0x00 是**表项数据**（符号索引 0、未用 GOT 槽、
+    // 重定位 addend、dynamic 结束标记、版本索引……），不是可复用的填充，写进去会破坏
+    // 符号解析 / 重定位 / 动态链接。旧实现只跳过 SHT_NULL/SHT_NOBITS，于是在
+    // 样本A.so 上把 .dynsym 的 62 段 19 字节零值、.dynamic、.got、.got.plt、
+    // .data 全报成「可 patch 空洞」。
+    private val NON_CAVE_SECTION_TYPES = setOf(
+        2L,           // SHT_SYMTAB
+        3L,           // SHT_STRTAB
+        4L,           // SHT_RELA
+        5L,           // SHT_HASH
+        6L,           // SHT_DYNAMIC
+        7L,           // SHT_NOTE
+        9L,           // SHT_REL
+        11L,          // SHT_DYNSYM
+        14L,          // SHT_INIT_ARRAY
+        15L,          // SHT_FINI_ARRAY
+        16L,          // SHT_PREINIT_ARRAY
+        17L,          // SHT_GROUP
+        18L,          // SHT_SYMTAB_SHNDX
+        0x6ffffff6L,  // SHT_GNU_HASH
+        0x6ffffffdL,  // SHT_GNU_verdef
+        0x6ffffffeL,  // SHT_GNU_verneed
+        0x6fffffffL,  // SHT_GNU_versym
+    )
+
+    private val NON_CAVE_SECTION_NAMES = setOf(
+        ".got", ".got.plt", ".data", ".data.rel.ro", ".dynamic", ".bss",
+        ".dynsym", ".dynstr", ".symtab", ".strtab", ".shstrtab",
+        ".hash", ".gnu.hash", ".gnu.version", ".gnu.version_r", ".gnu.version_d",
+        ".rela.dyn", ".rela.plt", ".rel.dyn", ".rel.plt", ".relr.dyn",
+        ".init_array", ".fini_array", ".preinit_array",
+        ".eh_frame", ".eh_frame_hdr", ".ARM.exidx", ".ARM.extab",
+        ".note.android.ident", ".comment", ".note.gnu.build-id",
+    )
+
+    /** 结构性节判定：类型或名字命中即视为不可当空洞。 */
+    private fun isStructuralSection(section: SectionInfo): Boolean {
+        if (section.type in NON_CAVE_SECTION_TYPES) return true
+        val name = section.name
+        if (name in NON_CAVE_SECTION_NAMES) return true
+        // 带后缀的变体：.data.rel.ro.local / .note.* / .rela.dyn.* / .gnu.version_d 等
+        return name.startsWith(".data.") ||
+            name.startsWith(".note") ||
+            name.startsWith(".rela.") ||
+            name.startsWith(".rel.") ||
+            name.startsWith(".gnu.") ||
+            name.startsWith(".eh_frame") ||
+            name.startsWith(".ARM.")
+    }
+
     // ── shared byte readers (ElfParser.Reader is private) ──
 
     private fun u16(data: ByteArray, off: Int, little: Boolean): Int {
@@ -54,10 +104,25 @@ internal object ElfAudit {
         return null
     }
 
+    /**
+     * Read up to [size] bytes starting at a virtual address.
+     *
+     * 【修复】旧实现要求 `off + size <= data.size` 才返回数据，也就是「请求的整个窗口
+     * 必须完整落在文件里」。调用方传的是**上界**（DT_GNU_HASH 要 512 KiB、DT_HASH 要
+     * 64 KiB），而实际哈希表往往只有几十字节，于是真实存在的表被判定为不存在 ——
+     * `elf_hash_tables` 因此在有 `DT_GNU_HASH` 的 so 上报 `hasGnu:false`。
+     *
+     * 现在按「窗口是上界」处理：截到文件尾部可用长度，只要求至少 4 字节可读。
+     * 调用方本来就对不足的字节做了越界保护（bucket 循环里有 `chainOff + 4 > bytes.size`
+     * 之类的检查），所以短读不会再制造错误数据。
+     */
     private fun bytesForVaddr(data: ByteArray, elf: ElfFile, vaddr: Long, size: Int): ByteArray? {
         val off = vaddrToOffset(elf, vaddr)?.toInt() ?: return null
-        if (off < 0 || off + size > data.size) return null
-        return data.copyOfRange(off, off + size)
+        if (off < 0 || off >= data.size) return null
+        val available = data.size - off
+        if (available < 4) return null
+        val take = minOf(size.coerceAtLeast(4), available)
+        return data.copyOfRange(off, off + take)
     }
 
     private fun cstr(data: ByteArray, offset: Int): String {
@@ -616,6 +681,9 @@ internal object ElfAudit {
             if (s.type == SHT_NULL || s.type == SHT_NOBITS || s.size <= 0) return@forEachIndexed
             if (execOnly && s.flags and SHF_EXECINSTR == 0L) return@forEachIndexed
             if (s.flags and SHF_ALLOC == 0L) return@forEachIndexed
+            // 【修复】结构性节（符号表 / 重定位表 / GOT / dynamic / 版本表 / unwind 表 …）
+            // 里的零值是表项数据，不是填充；写进去会破坏动态链接与异常展开。
+            if (isStructuralSection(s)) return@forEachIndexed
             val bytes = sectionBytes(data, s)
             var run = 0
             var fillByte = -1

@@ -17,9 +17,95 @@ internal object StringCensus {
     private val BASE64_RE = Regex("^[A-Za-z0-9+/]{16,}={0,2}$")
     private val BASE64_URL_RE = Regex("^[A-Za-z0-9_-]{16,}={0,2}$")
     private val HEXISH_RE = Regex("^[0-9a-fA-F]{16,}$")
+
+    /** 驼峰标识符：`nativeInitCipher` / `nativeConstructor` 这类 Java 方法名。 */
+    private val CAMEL_RE = Regex("^[a-z]+([A-Z][a-z]+)+$|^[A-Z][a-z]+([A-Z][a-z]+)+$")
+
+    /** Java 包/类路径：`com/example/tool/manager/adb/PairingContext`。 */
+    private val JAVA_PATH_SEG_RE = Regex("^[A-Za-z][A-Za-z0-9_]*$")
+
+    /**
+     * 一个路径段是否像 Java 标识符。
+     *
+     * 真 base64 的分段是随机字符，`PairingContext` 这种「PascalCase 单词拼接」
+     * 在 base64 里出现的概率可以忽略。允许三种形态：全小写（含数字）、
+     * 全大写常量、驼峰/PascalCase。
+     */
+    private fun isIdentifierSegment(seg: String): Boolean {
+        if (!JAVA_PATH_SEG_RE.matches(seg)) return false
+        if (seg.none { it.isUpperCase() }) return true   // 全小写
+        if (seg.none { it.isLowerCase() }) return true   // 全大写
+        return CAMEL_RE.matches(seg)                     // 驼峰 / PascalCase
+    }
+
+    /**
+     * 【修复】`base64_like` / `hex_like` 之前只用「字符集 + 长度」判定，于是
+     * `__register_atfork`（18 字符）、`__system_property_get`（21 字符）、
+     * `__android_log_print`（19 字符）、`__stack_chk_fail`、`android_set_abort_message`
+     * 这些**普通 C 标识符**全部被标成 base64 候选 —— 样本A.so 的 7 个
+     * base64_like 里 5 个是这种误报。
+     *
+     * base64 / hex 的真实特征不只是字符集，还有：
+     *  - 大小写与数字**混合**出现（纯小写 + 下划线的标识符几乎不可能是 base64）；
+     *  - base64 的 `+` / `/` / `=` 或大小写交替；
+     *  - hex 串通常全小写或全大写且无下划线。
+     */
+    private fun looksBase64(value: String): Boolean {
+        if (!(BASE64_RE.matches(value) || BASE64_URL_RE.matches(value))) return false
+        // 含 C 标识符特征（下划线）的一律排除
+        if ('_' in value) return false
+        // 【修复】绝对路径一律不是 base64。`/proc/self/attr/current` 同时含 `/`（base64
+        // 字符集内）与大小写混合，之前被误判成 base64_like。
+        if (value.startsWith("/")) return false
+        // 含 `.` / `:` / `-`（URL、主机名、版本号）也不是 base64 的常见形态
+        if ('.' in value || ':' in value) return false
+        // 【修复】驼峰 Java 标识符不是 base64：`nativeInitCipher`(16)、
+        // `nativeConstructor`(17) 字符数刚好越过 BASE64_RE 的 16 字符门槛，
+        // 且「小写+大写」被算成「大小写混合」，于是 样本C.so 上两者都被判成
+        // base64_like。真 base64 是随机字符，不会呈现 小写串+(大写+小写串)+ 的节奏，
+        // 也几乎不会完全没有数字。
+        if (value.length < 32 && value.none { it.isDigit() } && CAMEL_RE.matches(value)) return false
+        // 【修复】Java 包/类路径不是 base64：`com/example/tool/manager/adb/PairingContext`
+        // 38 字符、含 `/`、大小写混合，旧判据三条全中。判据是「每段都以小写开头，
+        // 或首字母大写且其余全小写」—— 真 base64 的分段不会这么整齐。
+        if ('/' in value) {
+            val segs = value.split('/')
+            if (segs.size >= 2 && segs.all { isIdentifierSegment(it) }) return false
+        }
+        val hasLower = value.any { it.isLowerCase() }
+        val hasUpper = value.any { it.isUpperCase() }
+        val hasDigit = value.any { it.isDigit() }
+        // 至少两类字符混合，或含 base64 专有符号
+        val classes = listOf(hasLower, hasUpper, hasDigit).count { it }
+        return classes >= 2 || '+' in value || '/' in value || '=' in value
+    }
+
+    private fun looksHex(value: String): Boolean {
+        if (!HEXISH_RE.matches(value)) return false
+        if ('_' in value) return false
+        // 纯十进制长数字不是 hex 串（如时间戳、随机 id 的十进制形态）
+        return value.any { it in 'a'..'f' || it in 'A'..'F' }
+    }
     private val FORMAT_RE = Regex("%[-#0+ .\\d]*(s|d|u|x|X|o|f|e|g|c|p|n|\\d+\\$)")
     private val JAVA_DESC_RE = Regex("^L[a-zA-Z_$/][\\w/$]*;$")
     private val PACKAGE_RE = Regex("^[a-z][a-z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*){2,}$")
+
+    /**
+     * 【修复】BoringSSL 的源码文件名 `hkdf.cc.inc` / `digest.cc.inc` / `e_aes.cc.inc`
+     * 形如 `a.b.c` 的三段小写点分串，旧 [PACKAGE_RE] 直接判成 package_name。
+     * 包名的段是「标识符」；源码文件名最后一段是已知扩展名（inc/cc/h/c/cpp/...）。
+     */
+    private val SOURCE_FILE_EXT = setOf(
+        "inc", "cc", "cpp", "cxx", "c", "h", "hpp", "hh", "s", "asm",
+        "txt", "json", "xml", "yml", "yaml", "md", "cfg", "conf", "ini",
+        "bin", "dat", "db", "log", "tmp", "so", "a", "o", "map", "pem", "crt", "key"
+    )
+
+    private fun looksPackageName(value: String): Boolean {
+        if (!PACKAGE_RE.matches(value)) return false
+        val last = value.substringAfterLast('.').lowercase()
+        return last !in SOURCE_FILE_EXT
+    }
     private val UUID_RE = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
     private val SQL_RE = Regex("(?i)^(select|insert|update|delete|create table)\\b.{4,}$")
     private val VERSION_RE = Regex("^\\d+(\\.\\d+){1,3}([_.-][\\w.]+)?$")
@@ -35,9 +121,9 @@ internal object StringCensus {
         if (JAVA_DESC_RE.matches(value)) out += "java_descriptor"
         if (ABS_PATH_RE.matches(value) && !URL_RE.matches(value)) out += "abs_path"
         if (FORMAT_RE.containsMatchIn(value)) out += "format_string"
-        if (BASE64_RE.matches(value) || BASE64_URL_RE.matches(value)) out += "base64_like"
-        if (HEXISH_RE.matches(value)) out += "hex_like"
-        if (PACKAGE_RE.matches(value)) out += "package_name"
+        if (looksBase64(value)) out += "base64_like"
+        if (looksHex(value)) out += "hex_like"
+        if (looksPackageName(value)) out += "package_name"
         if (UUID_RE.matches(value)) out += "uuid"
         if (SQL_RE.matches(value)) out += "sql"
         if (VERSION_RE.matches(value)) out += "version_like"

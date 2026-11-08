@@ -634,7 +634,34 @@ class McpHttpServer(private val context: Context, private val port: Int, private
         )
         val handler = ToolCatalog.byName[name]
         val payload = if (handler != null) {
-            handler.handle(ctx, args)
+            // 【修复 H1】dispatch 层兜底。
+            //
+            // 工具实现里未捕获的异常以前会直接冒到 Ktor，客户端拿到的是
+            // **HTTP 500 + 裸异常消息**，而不是可处理的 MCP 错误信封。
+            // 实测触发点（都在 guarded{} 之外 —— guarded 只包 engine 内部）：
+            //   edit_hex / edit_asm / edit_symbol: a.getJSONArray("edits")
+            //     → 缺参数时 JSONException("No value for edits")
+            //   workspace_export: ctx.engine.snapshotBytes(...)
+            //     → 缺 workspaceId 时 IllegalStateException("Workspace not found: ")
+            //
+            // 这里统一兜住，保证**任何**工具都不可能再把 500 抛给客户端；
+            // 参数层面的具体校验仍由各工具自己给出更精确的错误码。
+            try {
+                handler.handle(ctx, args)
+            } catch (cancel: kotlin.coroutines.cancellation.CancellationException) {
+                throw cancel
+            } catch (error: Throwable) {
+                AppLog.e("Tool $name threw outside guarded", error)
+                err(
+                    "TOOL_EXECUTION_FAILED",
+                    "${error.javaClass.simpleName}: ${error.message ?: "tool execution failed"}",
+                    "tool",
+                    name
+                ).put(
+                    "hint",
+                    "The tool threw before returning a result envelope (tool-side defect). Re-check the arguments documented by its schema."
+                )
+            }
         } else if (false) {
             JSONObject().put("error", "APK MCP bridge removed")
 } else {
@@ -1374,7 +1401,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                         "UNSUPPORTED_OPERATION", "ELF_PARSE_FAILED", "ELF_CORRUPTED", "DUMP_ERROR",
                         "EMULATION_DISABLED", "EMULATION_ERROR", "EMULATOR_UNAVAILABLE", "NATIVE_UNAVAILABLE",
                         "RIZIN_UNAVAILABLE", "RIZIN_CFG_FAILED", "RIZIN_SEARCH_FAILED", "RIZIN_COMMAND_FAILED", "LIEF_UNAVAILABLE", "PATCH_FAILED",
-                        "SYMBOL_NOT_FOUND", "MEMORY_MAP_ERROR", "MEMORY_WRITE_ERROR", "MEMORY_PROTECT_ERROR",
+                        "SYMBOL_NOT_FOUND", "TOOL_EXECUTION_FAILED", "MEMORY_MAP_ERROR", "MEMORY_WRITE_ERROR", "MEMORY_PROTECT_ERROR",
                         "MEMORY_UNMAP_ERROR", "SERVER_BUSY", "RATE_LIMITED", "TOOL_DISABLED"
                     )
                 )

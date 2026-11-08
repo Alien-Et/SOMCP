@@ -39,7 +39,13 @@ import org.json.JSONObject
  */
 internal object ImportAttribution {
 
-    private const val DT_VERNEED = 0x6FFFFFFFL
+    // 【修复】DT_VERNEED 是 0x6FFFFFFE，不是 0x6FFFFFFF。
+    // 旧值 0x6FFFFFFF 是 **DT_VERNEEDNUM**（一个整数计数，不是地址），于是
+    // `dynFirst(elf, DT_VERNEED)` 要么查不到（0x6FFFFFFE 存在而 0x6FFFFFFF 不存在时
+    // 直接返回 null），要么把「Verneed 条目数量」当成地址去 `sectionOffsetOf`，
+    // 落到一个几乎不可能正确的偏移上。两条路径都让 `parseVerneed` 返回空 map，
+    // `mode` 恒为 needed_heuristic，所有导入被归到 DT_NEEDED 的第一个库。
+    private const val DT_VERNEED = 0x6FFFFFFEL
 
     /** SHT_GNU_versym — the section type carrying `.gnu.version`. */
     private const val SHT_GNU_VERSYM = 0x6FFFFFFFL
@@ -86,25 +92,26 @@ internal object ImportAttribution {
      * ```
      * Elf64_Verneed { u16 vn_version; u16 vn_cnt; u32 vn_file; u32 vn_aux; u32 vn_next; }  // 16 bytes
      * Elf64_Vernaux { u32 vna_hash; u16 vna_flags; u16 vna_other; u32 vna_name; u32 vna_next; } // 16 bytes
-     * Elf32_Verneed { u16 vn_version; u16 vn_cnt; u32 vn_file; u32 vn_aux; u32 vn_next; }  // 16 bytes
-     * Elf32_Vernaux { u32 vna_hash; u16 vna_flags; u16 vna_other; u32 vna_name; u32 vna_next; } // 16 bytes
      * ```
      * Both are 16 bytes with the same offsets, so one read path serves both.
-     * Only the *pointers* differ in width, and in these two structures the
-     * file/aux/next members are all 32-bit regardless of ELF class.
      */
     private fun parseVerneed(elf: ElfFile, data: ByteArray): Map<Int, List<String>> {
         val out = LinkedHashMap<Int, MutableList<String>>()
         val base = dynFirst(elf, DT_VERNEED) ?: return out
         val strTab = elf.sections.firstOrNull { it.name == ".dynstr" } ?: return out
         val start = sectionOffsetOf(elf, base) ?: return out
+        // 【修复】`vn_file` / `vna_name` 是**相对 .dynstr 节起始的偏移**，要按 .dynstr
+        // 的文件偏移换算。旧实现直接用 `strTab.offset + fileNameOff`，在 addr == offset
+        // 的普通 SO 上碰巧正确，但 addr != offset（有 PT_LOAD 前置页、或 .dynstr 被
+        // 重定位过）时会读到相邻节的字节，得到乱码库名。
+        val dynstrOffset = strTab.offset
         var off = start.toInt()
         var guard = 0
         while (off >= 0 && off + 16 <= data.size && guard++ < 256) {
             val fileNameOff = readU32(data, off + 4)
             val auxOff = readU32(data, off + 8)
             val nextOff = readU32(data, off + 12)
-            val library = readCString(data, strTab.offset + fileNameOff)
+            val library = readCString(data, dynstrOffset + fileNameOff)
             // Walk the auxiliary chain: each Vernaux carries its own version index.
             var aux = if (auxOff != 0L) off + auxOff.toInt() else -1
             var auxGuard = 0
@@ -174,8 +181,12 @@ internal object ImportAttribution {
         val unresolved = JSONArray()
         val items = JSONArray()
 
-        imported.forEachIndexed { index, sym ->
-            val versionIndex = versym?.getOrNull(index)
+        imported.forEach { sym ->
+            // 【修复】用符号在 .dynsym 里的**原始下标**查 versym，而不是「过滤后的列表下标」。
+            // 旧实现 `forEachIndexed { index, sym -> versym?.getOrNull(index) }` 用错位下标，
+            // 版本号整体偏移，`versioned[versionIndex]` 查不中 ⇒ 每个 SO 都退化成
+            // needed_heuristic，并把所有导入都归到 DT_NEEDED 的第一个库。
+            val versionIndex = sym.tableIndex.takeIf { it >= 0 }?.let { versym?.getOrNull(it) }
             val candidates = versionIndex?.let { versioned?.get(it) }
             // Narrow once, up front: isNullOrEmpty() carries no contract, so it
             // would NOT smart-cast `candidates` in the versioned branch and the

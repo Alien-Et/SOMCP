@@ -48,8 +48,25 @@ jobs:
           submodules: false
           fetch-depth: 0
 
-      - name: Init submodules
-        run: bash tools/init-submodules.sh
+      # This workflow only cross-compiles Blutter runners. The runner build needs
+      # ONE submodule: third_party/capstone-4.0.2-src (build-blutter-runners.sh:105
+      # hard-fails if it's missing). It does NOT need rizin / lief / ghidra / unicorn
+      # -- those are for the APK build, which this workflow never runs.
+      #
+      # Running the full tools/init-submodules.sh here is a liability: it initializes
+      # 10 top-level submodules plus rz-ghidra's two nested pins, and any single
+      # failure (dead pin, rate limit, transient network error) kills the whole
+      # runner build even though Blutter never touches that code.
+      #
+      # So: init capstone only, and let build-blutter-runners.sh be the single
+      # gate on whether it's actually present.
+      - name: Init capstone submodule only
+        run: |
+          set -euo pipefail
+          git submodule sync third_party/capstone-4.0.2-src
+          git submodule update --init --depth 1 third_party/capstone-4.0.2-src
+          test -f third_party/capstone-4.0.2-src/CMakeLists.txt
+          echo "[blutter-engines] capstone-4.0.2-src ready"
 
       # No Java/Gradle: this workflow never builds an APK. It only runs the
       # NDK cross-compile (build-blutter-runners.sh) and the exporter.
