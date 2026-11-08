@@ -4,6 +4,45 @@
 
 ## 未发布（CI 修复）
 
+- **`checks` 打包必然 OOM：11 个 Blutter runner 共约 400 MB 塞进 APK（高）**。
+  `test-v11.yml` 的 `Build Blutter runners` 步骤此前是「构建成功就装进
+  `app/src/main`」，而 curated 矩阵有 11 个 Dart 版本、每个 runner 约 37.5 MB，
+  合计约 400 MB。`zipflinger` 在 `ApkFlinger$writeFile` 里 deflate 这些条目时
+  把 `org.gradle.jvmargs=-Xmx4096m` 撑爆：
+
+  ```text
+  Caused by: java.lang.OutOfMemoryError: Java heap space
+    at com.android.zipflinger.NoCopyByteArrayOutputStream.<init>
+    at com.android.zipflinger.Compressor.deflate
+    at com.android.builder.internal.packaging.ApkFlinger$writeFile
+    at PackageAndroidArtifact$IncrementalSplitterRunnable.doExecute
+  ```
+
+  这不是偶发——以前 CI 里没炸，只是因为那次 runner 构建**提前退出**（`skipped: 11`，
+  什么都没装）。第一次真正构建成功就必然失败。
+
+  修法是把 runner 的「构建」与「打包」拆开，两个环境变量（都在
+  `tools/blutter-matrix/build-blutter-runners.sh`）：
+
+  | 变量 | 默认 | 作用 |
+  | --- | --- | --- |
+  | `BLUTTER_INSTALL` | `1` | `0` = 只构建 + staging 校验，`app/src/main` 一个字节都不动 |
+  | `BLUTTER_MAX_RUNNERS` | `0` | `0` = 不限；`N` = 最多装 N 个进 APK，其余仍构建并留给按需引擎包 |
+
+  三个工作流分别取：`test-v11.yml` → `BLUTTER_INSTALL=0`（PR 门禁只证明矩阵能编译，
+  它自己还要跑 `assembleDebug` + `assembleRelease`，不该背 400 MB）；
+  `release.yml` → `BLUTTER_MAX_RUNNERS=1`（发布包只带 1 个，与入库基线一致）；
+  `blutter-engines.yml` → 显式 `install=0 / max=0`（它的产物就是全部 runner）。
+
+  **本地构建行为不变**：两个变量的默认值就是原行为（装全部、装进 `app/src/main`）。
+
+  `generate_manifest.py` 同时新增 `--max-runners` / `--prefer-manifest`，
+  裁剪优先级为「入库 `compatibilityKey` → 入库 `dartVersion` → 稳定版 → 新版本」。
+  第二级不可省：`compatibilityKey` 里含 `blutterCommit` 哈希，`verify_manifest.py`
+  把上游 pin 在 `4a60ac648b` 而入库 manifest 是 `528acbe83b` 构建的，只按 key 匹配
+  会让 `--max-runners 1` 挑到最新的 `3.14.0 beta`，把已发布的 `3.12.2` 稳定版
+  悄悄换掉。被裁掉的 runner 逐条打印 `not packaged: <runnerId> [<key>]`。
+
 - **工具链版本收敛到一处定义（中）**。三个构建工作流原来各自硬编码 JDK /
   Gradle / Android platform / build-tools / NDK / cmake，`upload-artifact` 还
   一个用 `@v7` 一个用 `@v4`。现在每个工作流在顶层 `env:` 块里声明一次

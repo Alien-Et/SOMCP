@@ -32,6 +32,14 @@
 #   ANDROID_NDK_ROOT          explicit NDK root (default: autodetect
 #                             ANDROID_HOME/SDK ndk/29.0.14206865)
 #   BLUTTER_JOBS              parallel build jobs (default: 4)
+#   BLUTTER_MAX_RUNNERS       package at most N verified runners into the APK
+#                             (default: 0 = unlimited). The rest are still
+#                             built and staged under build/blutter-matrix so
+#                             blutter-engines.yml can ship them as on-demand
+#                             engine packs - they simply stay out of the APK.
+#   BLUTTER_INSTALL           1 (default) installs the staged manifest + shared
+#                             objects into app/src/main; 0 stops after staging
+#                             verification and leaves app/src/main untouched.
 #
 # Prerequisites:
 #   - git submodule update --init --recursive
@@ -56,6 +64,13 @@ MANIFEST_APP="$PROJECT/app/src/main/assets/blutter/runners.json"
 JNI_APP="$PROJECT/app/src/main/jniLibs/arm64-v8a"
 
 JOBS="${BLUTTER_JOBS:-4}"
+# 0 = unlimited (historical behaviour, keeps local runs byte-identical). The
+# APK-packaging workflows set 1: every extra runner is ~37.5 MB of .so that
+# zipflinger has to deflate through the Gradle heap, and 11 of them blow the
+# 4 GB heap in :app:packageDebug. Dropped runners are still built and staged so
+# blutter-engines.yml can publish them as on-demand engine packs.
+MAX_RUNNERS="${BLUTTER_MAX_RUNNERS:-0}"
+INSTALL="${BLUTTER_INSTALL:-1}"
 ICU_VERSION="76.1"
 ICU_SHA256="dfacb46bfe4747410472ce3e1144bf28a102feeaa4e3875bac9b4c6cf30f4f3e"
 ICU_URL="https://github.com/unicode-org/icu/releases/download/release-76-1/icu4c-76_1-src.tgz"
@@ -129,12 +144,19 @@ python3 "$TOOLS/build_all.py" \
 echo "[blutter-runners] generating + verifying manifest (staging) ..."
 python3 "$TOOLS/generate_manifest.py" \
   --plan "$BLD/build-plan-curated.json" --root "$BLD" \
-  --manifest "$STAGING_MANIFEST" --jni-root "$STAGING_JNI"
+  --manifest "$STAGING_MANIFEST" --jni-root "$STAGING_JNI" \
+  --max-runners "$MAX_RUNNERS" --prefer-manifest "$MANIFEST_APP"
 # verify_manifest fails (non-zero) if there is no verified runner at all.
 python3 "$TOOLS/verify_manifest.py" --manifest "$STAGING_MANIFEST" --jni-root "$STAGING_JNI"
 
 RUNNERS_COUNT=$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['runners']))" "$STAGING_MANIFEST")
 [[ "$RUNNERS_COUNT" -ge 1 ]] || fail "no verified runner produced; refusing to touch app/src/main"
+
+if [[ "$INSTALL" != "1" ]]; then
+  echo "[blutter-runners] BLUTTER_INSTALL=0 - staged $RUNNERS_COUNT verified runner(s), app/src/main left untouched"
+  python3 -c "import json,sys;print('\n'.join('  - '+r['runnerId']+' ['+r['compatibilityKey']+']' for r in json.load(open(sys.argv[1]))['runners']))" "$STAGING_MANIFEST"
+  exit 0
+fi
 
 # Only reachable when verification passed with >=1 runner.
 mkdir -p "$JNI_APP" "$(dirname "$MANIFEST_APP")"

@@ -117,6 +117,11 @@ jobs:
       - name: Build Blutter runners
         env:
           BLUTTER_JOBS: "4"
+          # This workflow publishes on-demand engine packs, not an APK, so it
+          # must keep building everything - no runner cap - and must leave
+          # app/src/main alone. export_engines.py below reads the staging tree.
+          BLUTTER_MAX_RUNNERS: "0"
+          BLUTTER_INSTALL: "0"
         run: |
           set -euo pipefail
           bash tools/blutter-matrix/build-blutter-runners.sh

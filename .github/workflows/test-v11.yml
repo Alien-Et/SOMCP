@@ -284,16 +284,20 @@ jobs:
         run: |
           set -euo pipefail
           # Validate that the curated Dart AOT blutter runner matrix
-          # (tools/blutter-matrix/curated-versions.json, e.g. Dart 3.11.5 /
-          # Flutter 3.41.x) cross-compiles on the NDK available in CI, and on
-          # success install the regenerated runners.json + libblutter_*.so so
-          # the debug/release APKs below also carry them (issue #5).
+          # (tools/blutter-matrix/curated-versions.json) still cross-compiles on
+          # the NDK available in CI.
           #
-          # Best-effort on purpose: this is a multi-hour Dart VM cross-compile.
-          # build-blutter-runners.sh only touches app/src/main after staging
-          # passes verify_manifest.py, so a failure here never breaks CI or the
-          # committed runners/manifest.
-          bash tools/blutter-matrix/build-blutter-runners.sh
+          # BLUTTER_INSTALL=0 on purpose: this PR gate only proves the matrix
+          # builds. Installing the regenerated runners into app/src/main here
+          # would put every verified runner (~37.5 MB each, 11 of them today)
+          # into the debug/release APK, and :app:packageDebug then dies with
+          # java.lang.OutOfMemoryError inside ApkFlinger while zipflinger
+          # deflates them. Packaging is release.yml's job, which caps the count
+          # with BLUTTER_MAX_RUNNERS.
+          #
+          # Best-effort on purpose: this is a multi-hour Dart VM cross-compile
+          # and a failure here must not block a PR.
+          BLUTTER_INSTALL: "0" bash tools/blutter-matrix/build-blutter-runners.sh
       - name: Debug build
         run: gradle :app:assembleDebug --stacktrace
       - name: Restore release signing keystore (or CI fallback)

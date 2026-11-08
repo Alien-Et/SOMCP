@@ -370,6 +370,22 @@ Upload APK
 APK 签名校验）统一收在 `tools/ci/` 的共享脚本里，四个工作流都调同一份，
 避免「checks 走一条路径、release 走另一条」。
 
+Blutter runner 的**构建**与**打包**是分开的两件事：每个 runner 约 37.5 MB，
+curated 矩阵有 11 个 Dart 版本，全部塞进 APK 会在 `zipflinger` deflate 时撑爆
+Gradle 堆（`OutOfMemoryError: Java heap space`）。所以 `build-blutter-runners.sh`
+用两个环境变量控制：
+
+```text
+BLUTTER_INSTALL=1        # 默认：把校验过的 runner 装进 app/src/main（本地行为）
+BLUTTER_INSTALL=0        # 只构建 + staging 校验，app/src/main 不动（test-v11 / engines）
+BLUTTER_MAX_RUNNERS=0    # 默认：不限（本地行为）
+BLUTTER_MAX_RUNNERS=1    # 最多装 1 个进 APK（release.yml）
+```
+
+被裁掉的 runner 仍会构建并留在 `build/blutter-matrix/`，由
+`blutter-engines.yml` 打成按需引擎包，运行时下载到应用私有目录即可用。
+细节见 [17 · 构建与 CI](docs/17.构建与CI.md) 的「Blutter runner 的打包预算」。
+
 产物：
 
 ```text
@@ -556,6 +572,14 @@ bash build-native-android.sh
   一次性密钥）；apksigner 路径改从 `$SOMCP_BUILD_TOOLS` 推导，影子副本消除。
   守卫新增 `SHARED_SCRIPTS` / `SHARED_SCRIPT_USERS` 查「该调的调了」「不许内联回去」
 - CI keystore 恢复：`tr -d '[:space:]'` 去空白 + `keytool -list` 校验
+- `checks` 打包 OOM：11 个 curated Blutter runner 每个约 37.5 MB（合计约 400 MB）
+  被 `zipflinger` 在 `ApkFlinger$writeFile` deflate 时撑爆 `-Xmx4096m`。
+  `build-blutter-runners.sh` 拆出 `BLUTTER_INSTALL`（0 = 只构建校验、不动
+  `app/src/main`）与 `BLUTTER_MAX_RUNNERS`（装进 APK 的上限，0 = 不限），
+  `generate_manifest.py` 加 `--max-runners` / `--prefer-manifest`（裁剪优先级
+  含 `dartVersion` —— `compatibilityKey` 里带 `blutterCommit` 哈希，上游 rebase
+  一次就全变）。`test-v11` 用 `install=0`、`release` 用 `max=1`、`blutter-engines`
+  用 `install=0/max=0`；两个变量默认值等于原行为，本地构建不受影响
 
 **第二轮全项目扫描（2026-11-07）**
 
