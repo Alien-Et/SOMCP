@@ -79,3 +79,7 @@ aoci.database.txt
 
 # Local repository cognition file (machine-generated; not version-controlled)
 AGENTS.md
+
+# Local Blutter engine build output (large binary artifacts; CI uploads these
+# as release assets, they are never committed)
+/dist/

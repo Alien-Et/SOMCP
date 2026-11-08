@@ -159,6 +159,122 @@ jobs:
           key: native-linux-${{ hashFiles('build-native-android.sh', 'rizin-cross-*.ini', 'rizin-native.ini', 'app/src/main/cpp/CMakeLists.txt') }}-ndk29-rizin091
       - name: Build native backends (Rizin + LIEF)
         run: bash build-native-android.sh
+
+      # Cross-compiling capstone + keystone + unicorn for four ABIs is slow and
+      # depends only on the three submodule pins and this script, never on our
+      # sources. Cache the produced .so files per ABI; the build step below
+      # skips any ABI whose outputs are already complete, so a cache hit is a
+      # real skip (the script itself always rebuilds, so caching its build
+      # trees would buy nothing).
+      - name: Cache Unidbg native libs
+        id: cache-unidbg
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a/libcapstone.so
+            app/src/main/jniLibs/arm64-v8a/libkeystone.so
+            app/src/main/jniLibs/arm64-v8a/libunicorn.so
+            app/src/main/jniLibs/x86_64/libcapstone.so
+            app/src/main/jniLibs/x86_64/libkeystone.so
+            app/src/main/jniLibs/x86_64/libunicorn.so
+            app/src/main/jniLibs/armeabi-v7a/libcapstone.so
+            app/src/main/jniLibs/armeabi-v7a/libkeystone.so
+            app/src/main/jniLibs/x86/libcapstone.so
+            app/src/main/jniLibs/x86/libkeystone.so
+          key: unidbg-native-${{ hashFiles('build-unidbg-native.sh', '.gitmodules') }}-ndk29-v1
+      # The Unidbg natives are NOT in the unidbg Maven artifacts for Android
+      # (those jars only carry linux_64 / linux_aarch64), so without this step
+      # the APK ships with only libcapstone.so and every emulate_* / unidbg_*
+      # call dies with `dlopen failed: library "libkeystone.so" not found`.
+      # release.yml has always had this step; the checks job did not, so the
+      # artifacts it produced were not the artifacts a release would ship.
+      - name: Build Unidbg native libs (capstone/keystone/unicorn)
+        run: |
+          set -euo pipefail
+          # unicorn (QEMU, __uint128_t) only compiles for the 64-bit ABIs; the
+          # 32-bit ABIs get capstone/keystone only and Unidbg degrades there.
+          needed() {
+            case "$1" in
+              arm64-v8a|x86_64) echo "capstone keystone unicorn" ;;
+              *)                echo "capstone keystone" ;;
+            esac
+          }
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            complete=1
+            for lib in $(needed "$abi"); do
+              test -f "app/src/main/jniLibs/$abi/lib$lib.so" || complete=0
+            done
+            if [ "$complete" = "1" ]; then
+              echo "[unidbg-native] $abi already present (cache hit); skipping"
+              continue
+            fi
+            bash build-unidbg-native.sh --abi "$abi"
+          done
+          # Sanity-check every ABI before the APK is assembled.
+          for abi in arm64-v8a x86_64; do
+            for lib in capstone keystone unicorn; do
+              test -f "app/src/main/jniLibs/$abi/lib$lib.so" || {
+                echo "::error::missing app/src/main/jniLibs/$abi/lib$lib.so after build-unidbg-native.sh"
+                exit 1
+              }
+            done
+          done
+          for abi in armeabi-v7a x86; do
+            for lib in capstone keystone; do
+              test -f "app/src/main/jniLibs/$abi/lib$lib.so" || {
+                echo "::error::missing app/src/main/jniLibs/$abi/lib$lib.so after build-unidbg-native.sh"
+                exit 1
+              }
+            done
+          done
+          echo "Unidbg native libs present for required ABIs."
+
+      # libcore_ghidra.so is loaded from the APK's jniLibs lib dir, so it has
+      # to be packaged like any other native. Missing it is not a build
+      # failure at runtime -- read_disasm just returns no pseudocode -- which
+      # is exactly why the checks job has to assert it is there.
+      #
+      # This script also installs a Rizin SDK per ABI (find_package(Rizin)
+      # needs it), which is another long meson/ninja run, so cache the four
+      # plugin outputs and skip the ABI when they are all there.
+      - name: Cache rz-ghidra plugin
+        id: cache-ghidra
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/src/main/jniLibs/arm64-v8a/libcore_ghidra.so
+            app/src/main/jniLibs/armeabi-v7a/libcore_ghidra.so
+            app/src/main/jniLibs/x86/libcore_ghidra.so
+            app/src/main/jniLibs/x86_64/libcore_ghidra.so
+            rizin-sdk
+            third_party/rz-ghidra-install-arm64-v8a
+            third_party/rz-ghidra-install-armeabi-v7a
+            third_party/rz-ghidra-install-x86
+            third_party/rz-ghidra-install-x86_64
+          key: rz-ghidra-${{ hashFiles('build-rz-ghidra-android.sh', '.gitmodules') }}-ndk29-v1
+      - name: Build rz-ghidra plugin (libcore_ghidra.so)
+        run: |
+          set -euo pipefail
+          missing=0
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            test -f "app/src/main/jniLibs/$abi/libcore_ghidra.so" || missing=1
+          done
+          if [ "$missing" = "0" ]; then
+            echo "[rz-ghidra] all four ABIs already present (cache hit); skipping"
+            exit 0
+          fi
+          bash build-rz-ghidra-android.sh
+      - name: Verify rz-ghidra plugin in jniLibs
+        run: |
+          set -euo pipefail
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            test -f "app/src/main/jniLibs/$abi/libcore_ghidra.so" || {
+              echo "::error::missing app/src/main/jniLibs/$abi/libcore_ghidra.so after build-rz-ghidra-android.sh"
+              exit 1
+            }
+          done
+          echo "libcore_ghidra.so present for all four ABIs."
+
       - name: Build Blutter runners (best-effort)
         continue-on-error: true
         run: |
