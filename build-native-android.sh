@@ -16,6 +16,18 @@
 # the actions/cache step), the script exits immediately without rebuilding.
 set -euo pipefail
 
+# --- Shared CMake compatibility helper --------------------------------------
+# CMake 4.x (what the GitHub ubuntu runner ships) turns both
+# `cmake_minimum_required(VERSION <3.5)` and `cmake_policy(SET CMPxxxx OLD)`
+# into hard errors. LIEF 0.16.1 declares 3.24 so it configures either way, but
+# normalising the tree costs nothing and keeps this script consistent with
+# build-rz-ghidra-android.sh / build-unidbg-native.sh — a future pin move to an
+# older tag then cannot reintroduce the failure.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/cmake-compat.sh
+source "$SCRIPT_DIR/tools/cmake-compat.sh"
+CMAKE_POLICY_MIN="$(somcp_cmake_compat_policy_flag)"
+
 # --- Locate the Android NDK ---
 NDK_ROOT="${ANDROID_NDK_HOME:-}"
 if [ -z "$NDK_ROOT" ] && [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME/ndk" ]; then
@@ -128,8 +140,14 @@ for abi in "${APIS[@]}"; do
     fi
     rm -rf "$build_dir"
     echo "[build-native] LIEF $abi: cmake configure + build + install..."
+    # Idempotent; only rewrites files that still declare a pre-3.5 minimum or a
+    # `CMPxxxx OLD` policy, so a normal LIEF tree is left untouched. Kept here
+    # (not once outside the loop) because it is cheap and makes each ABI's log
+    # self-describing when a patch does fire.
+    somcp_cmake_normalise "$LIEF_SRC" "LIEF/$abi"
     cmake -G Ninja \
         -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
+        "$CMAKE_POLICY_MIN" \
         -DANDROID_ABI="$abi" \
         -DANDROID_PLATFORM=android-26 \
         -DCMAKE_BUILD_TYPE=Release \

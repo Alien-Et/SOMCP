@@ -36,6 +36,17 @@
 #   - cmake >= 3.22 and ninja on PATH
 set -euo pipefail
 
+# Shared CMake compatibility helper (tools/cmake-compat.sh). capstone 4.0.2's
+# CMakeLists opens with `cmake_minimum_required(VERSION 2.6)` and later calls
+# `cmake_policy (SET CMP0048 OLD)`; a 4.x cmake rejects both outright, so the
+# build never reaches the compiler. The helper rewrites them in place
+# (idempotent, submodule working copy only) and provides the
+# -DCMAKE_POLICY_VERSION_MINIMUM escape hatch.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../cmake-compat.sh
+source "$SCRIPT_DIR/../cmake-compat.sh"
+CMAKE_POLICY_MIN="$(somcp_cmake_compat_policy_flag)"
+
 NDK="$1"
 INSTALL="${2:-}"
 JOBS="${3:-4}"
@@ -72,21 +83,11 @@ BUILD="$INSTALL/../capstone-build"
 rm -rf "$BUILD" "$INSTALL"
 mkdir -p "$INSTALL"
 
-# capstone 4.0.2's CMakeLists.txt opens with `cmake_minimum_required(VERSION 2.6)`.
-# CMake 4.x removed compatibility with anything below 3.5 and refuses to
-# configure: "Compatibility with CMake < 3.5 has been removed from CMake."
-# CI runners ship CMake 4.x, so without this the capstone build dies before
-# anything is compiled. Patch the submodule in place (idempotent, main repo
-# untouched) and pass the escape hatch as well -- mirrors the same guard in
-# build-unidbg-native.sh, which already had it.
-CMAKE_LISTS="$SRC/CMakeLists.txt"
-if [[ -f "$CMAKE_LISTS" ]] && grep -qE 'cmake_minimum_required *\(VERSION [0-2]\.' "$CMAKE_LISTS"; then
-  sed -i -E \
-    -e 's/cmake_policy *\(SET CMP0048 OLD\)/cmake_policy(SET CMP0048 NEW)/g' \
-    -e 's/cmake_minimum_required *\(VERSION 2\.[0-9]+\)/cmake_minimum_required(VERSION 3.5)/g' \
-    "$CMAKE_LISTS"
-  echo "[capstone] patched $CMAKE_LISTS for CMake 4.x (min version raised to 3.5)"
-fi
+# See tools/cmake-compat.sh. capstone 4.0.2 declares `VERSION 2.6` plus
+# `cmake_policy (SET CMP0048 OLD)` (note the space before the parenthesis), both
+# of which a 4.x cmake refuses. Walk the tree rather than patching one file so a
+# future pin that adds nested CMakeLists is covered too.
+somcp_cmake_normalise "$SRC" capstone
 
 echo "[capstone] configuring (Android arm64-v8a, static) ..."
 "$CMAKE_BIN" -S "$SRC" -B "$BUILD" -G Ninja \
@@ -94,7 +95,7 @@ echo "[capstone] configuring (Android arm64-v8a, static) ..."
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-26 \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  "$CMAKE_POLICY_MIN" \
   -DCAPSTONE_BUILD_STATIC=ON \
   -DCAPSTONE_BUILD_SHARED=OFF \
   -DCAPSTONE_BUILD_TESTS=OFF \

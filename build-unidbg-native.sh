@@ -186,6 +186,20 @@ NINJA_DIR="$(dirname "$NINJA_BIN")"
 export PATH="$NINJA_DIR:$PATH"
 echo "[unidbg-native] cmake: $CMAKE_BIN (ninja: $NINJA_BIN)"
 
+# Normalise legacy CMakeLists (capstone 4.0.2 / keystone's bundled LLVM) before
+# any configure. GitHub runners ship CMake 4.x, which turns both
+# `cmake_minimum_required(VERSION <3.5)` and `cmake_policy(SET CMPxxxx OLD)`
+# into hard errors; the shared helper rewrites them in place, idempotently, and
+# never touches the main repository.
+# shellcheck source=tools/cmake-compat.sh
+source "$PROJECT/tools/cmake-compat.sh"
+
+# The escape hatch that tells a 4.x cmake to still accept an old declared
+# minimum. somcp_cmake_normalise already rewrites those declarations; this is
+# the belt-and-braces second line of defence (and covers any nested tree the
+# walk might miss).
+CMAKE_POLICY_MIN="$(somcp_cmake_compat_policy_flag)"
+
 BUILD_ROOT="$PROJECT/third_party/unidbg-native-build/$ABI"
 
 build_one() {
@@ -198,24 +212,20 @@ build_one() {
   local build="$BUILD_ROOT/$name"
   rm -rf "$build"
   mkdir -p "$build"
-  # CMake 4.x 彻底禁止 cmake_policy(SET CMP0048 OLD)（老 capstone/keystone 的
-  # CMakeLists 里还写着），且拒绝 cmake_minimum_required(VERSION <3.5)。
-  # 幂等地把 OLD 改成 NEW，并抬高最低版本要求；本地 SDK cmake 3.22.1 与 CI
-  # 系统 cmake 4.x 都能通过。只动 submodule 的 CMakeLists，主仓库无改动。
-  local cmakelists="$src/CMakeLists.txt"
-  if [[ -f "$cmakelists" ]]; then
-    sed -i -E \
-      -e 's/cmake_policy *\(SET CMP0048 OLD\)/cmake_policy(SET CMP0048 NEW)/g' \
-      -e 's/cmake_minimum_required *\(VERSION 2\.[0-9]+\)/cmake_minimum_required(VERSION 3.5)/g' \
-      "$cmakelists"
-  fi
+  # See tools/cmake-compat.sh: CMake 4.x rejects both
+  # `cmake_minimum_required(VERSION <3.5)` and `cmake_policy(SET CMPxxxx OLD)`,
+  # and the trees built here (capstone 4.0.2, keystone with its bundled LLVM)
+  # still declare both. The helper walks the whole tree (keystone's llvm/ and
+  # kstool/ carry their own copies), rewrites them idempotently, and leaves the
+  # main repository untouched.
+  somcp_cmake_normalise "$src" "$name"
   echo "[unidbg-native] configuring $name ..."
   "$CMAKE_BIN" -S "$src" -B "$build" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
     -DANDROID_ABI="$ABI" \
     -DANDROID_PLATFORM=android-26 \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    "$CMAKE_POLICY_MIN" \
     "$@"
   echo "[unidbg-native] building $name ..."
   "$CMAKE_BIN" --build "$build" --parallel 4
