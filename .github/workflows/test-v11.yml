@@ -205,20 +205,10 @@ jobs:
       - name: Lint check
         run: gradle :app:lintDebug --stacktrace
       - name: Install native build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends meson ninja-build gcc g++ pkg-config
+        run: bash tools/ci/install-build-tools.sh
       - name: Clone Rizin source (latest release)
-        run: |
-          LATEST_TAG=$(git ls-remote --tags --sort=-v:refname https://github.com/rizinorg/rizin.git 2>/dev/null | grep -oE "refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$" | head -1 | sed "s|refs/tags/||")
-          if [ -z "$LATEST_TAG" ]; then
-            echo "::error::无法获取 rizin 最新 release tag"
-            exit 1
-          fi
-          echo "::notice::Rizin 最新版本: $LATEST_TAG"
-          if [ ! -d third_party/rizin-src/librz/include ]; then
-            git clone --depth 1 --branch "$LATEST_TAG" https://github.com/rizinorg/rizin.git third_party/rizin-src
-          fi
+        timeout-minutes: 15
+        run: bash tools/ci/clone-rizin.sh
       - name: Cache native backends (Rizin + LIEF)
         uses: actions/cache@v4
         with:
@@ -260,46 +250,7 @@ jobs:
       # release.yml has always had this step; the checks job did not, so the
       # artifacts it produced were not the artifacts a release would ship.
       - name: Build Unidbg native libs (capstone/keystone/unicorn)
-        run: |
-          set -euo pipefail
-          # unicorn (QEMU, __uint128_t) only compiles for the 64-bit ABIs; the
-          # 32-bit ABIs get capstone/keystone only and Unidbg degrades there.
-          needed() {
-            case "$1" in
-              arm64-v8a|x86_64) echo "capstone keystone unicorn" ;;
-              *)                echo "capstone keystone" ;;
-            esac
-          }
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-            complete=1
-            for lib in $(needed "$abi"); do
-              test -f "app/src/main/jniLibs/$abi/lib$lib.so" || complete=0
-            done
-            if [ "$complete" = "1" ]; then
-              echo "[unidbg-native] $abi already present (cache hit); skipping"
-              continue
-            fi
-            bash build-unidbg-native.sh --abi "$abi"
-          done
-          # Sanity-check every ABI before the APK is assembled.
-          for abi in arm64-v8a x86_64; do
-            for lib in capstone keystone unicorn; do
-              test -f "app/src/main/jniLibs/$abi/lib$lib.so" || {
-                echo "::error::missing app/src/main/jniLibs/$abi/lib$lib.so after build-unidbg-native.sh"
-                exit 1
-              }
-            done
-          done
-          for abi in armeabi-v7a x86; do
-            for lib in capstone keystone; do
-              test -f "app/src/main/jniLibs/$abi/lib$lib.so" || {
-                echo "::error::missing app/src/main/jniLibs/$abi/lib$lib.so after build-unidbg-native.sh"
-                exit 1
-              }
-            done
-          done
-          echo "Unidbg native libs present for required ABIs."
-
+        run: bash tools/ci/build-unidbg-natives.sh --skip-existing
       # libcore_ghidra.so is loaded from the APK's jniLibs lib dir, so it has
       # to be packaged like any other native. Missing it is not a build
       # failure at runtime -- read_disasm just returns no pseudocode -- which
@@ -324,27 +275,9 @@ jobs:
             third_party/rz-ghidra-install-x86_64
           key: rz-ghidra-${{ hashFiles('build-rz-ghidra-android.sh', '.gitmodules') }}-ndk29-v1
       - name: Build rz-ghidra plugin (libcore_ghidra.so)
-        run: |
-          set -euo pipefail
-          missing=0
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-            test -f "app/src/main/jniLibs/$abi/libcore_ghidra.so" || missing=1
-          done
-          if [ "$missing" = "0" ]; then
-            echo "[rz-ghidra] all four ABIs already present (cache hit); skipping"
-            exit 0
-          fi
-          bash build-rz-ghidra-android.sh
+        run: bash tools/ci/build-rz-ghidra.sh --skip-existing
       - name: Verify rz-ghidra plugin in jniLibs
-        run: |
-          set -euo pipefail
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
-            test -f "app/src/main/jniLibs/$abi/libcore_ghidra.so" || {
-              echo "::error::missing app/src/main/jniLibs/$abi/libcore_ghidra.so after build-rz-ghidra-android.sh"
-              exit 1
-            }
-          done
-          echo "libcore_ghidra.so present for all four ABIs."
+        run: bash tools/ci/verify-rz-ghidra.sh
 
       - name: Build Blutter runners (best-effort)
         continue-on-error: true
@@ -360,78 +293,34 @@ jobs:
           # build-blutter-runners.sh only touches app/src/main after staging
           # passes verify_manifest.py, so a failure here never breaks CI or the
           # committed runners/manifest.
-          sudo apt-get install -y --no-install-recommends cmake ninja-build >/dev/null
           bash tools/blutter-matrix/build-blutter-runners.sh
       - name: Debug build
         run: gradle :app:assembleDebug --stacktrace
       - name: Restore release signing keystore (or CI fallback)
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE }}
+          KS_ALIAS: ${{ secrets.ALIAS }}
+          KS_ALIAS_PASS: ${{ secrets.ALIAS_PASSWORD }}
+          KS_STORE_PASS: ${{ secrets.PASSWORD }}
         run: |
           set -euo pipefail
-          mkdir -p release
-          if [ -n "${{ secrets.KEYSTORE }}" ]; then
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KS_ALIAS" ] \
+             && [ -n "$KS_ALIAS_PASS" ] && [ -n "$KS_STORE_PASS" ]; then
             # Real release keystore from repository secrets (BASE64-encoded).
-            echo "${{ secrets.KEYSTORE }}" | base64 -d > release/so-reverse-mcp-release.jks
-            {
-              echo "storeFile=release/so-reverse-mcp-release.jks"
-              echo "storePassword=${{ secrets.PASSWORD }}"
-              echo "keyAlias=${{ secrets.ALIAS }}"
-              echo "keyPassword=${{ secrets.ALIAS_PASSWORD }}"
-            } > release/keystore.properties
-            echo "Restored release signing keystore from secrets."
+            # Shared with build.yml / release.yml so all three go through the
+            # same tr -d '[:space:]' + keytool verification path.
+            bash tools/ci/restore-keystore.sh --write-properties
           else
             # Fallback (e.g. fork PRs cannot access repository secrets):
             # CI-only throwaway keystore, fresh key each run, NOT for
             # distribution. APKs signed with it cannot be installed over the
             # real release (docs/forum-post.md); build verification only.
-            STORE_PASS="ci-$(openssl rand -hex 16)"
-            keytool -genkeypair -v \
-              -storetype JKS \
-              -keystore release/so-reverse-mcp-release.jks \
-              -alias so-reverse-mcp \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 36500 \
-              -storepass "$STORE_PASS" \
-              -keypass "$STORE_PASS" \
-              -dname "CN=SOMCP CI, O=SoReverse MCP, C=CN"
-            {
-              echo "storeFile=release/so-reverse-mcp-release.jks"
-              echo "storePassword=$STORE_PASS"
-              echo "keyAlias=so-reverse-mcp"
-              echo "keyPassword=$STORE_PASS"
-            } > release/keystore.properties
-            echo "Secrets unavailable; generated CI-only signing keystore (not for distribution)."
+            bash tools/ci/make-ci-keystore.sh --write-properties
           fi
       - name: Release build
         run: gradle :app:assembleRelease --stacktrace
 
       - name: Verify and ensure v2/v3 APK signing
-        run: |
-          set -euo pipefail
-          # Read signing config from keystore.properties (set up in the
-          # previous step, either from secrets or CI fallback).
-          storeFile=$(grep '^storeFile=' release/keystore.properties | head -1 | cut -d= -f2-)
-          storePassword=$(grep '^storePassword=' release/keystore.properties | head -1 | cut -d= -f2-)
-          keyAlias=$(grep '^keyAlias=' release/keystore.properties | head -1 | cut -d= -f2-)
-          keyPassword=$(grep '^keyPassword=' release/keystore.properties | head -1 | cut -d= -f2-)
-          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
-          for apk in app/build/outputs/apk/release/*.apk; do
-            echo "=== Checking signing schemes: $(basename "$apk") ==="
-            if "$APKSIGNER" verify --verbose "$apk" 2>&1 | grep -qi "NOT PRESENT"; then
-              echo "::warning::v2/v3 signing NOT verified in $(basename "$apk"); re-signing with apksigner"
-              "$APKSIGNER" sign \
-                --ks "$storeFile" \
-                --ks-pass "pass:$storePassword" \
-                --ks-key-alias "$keyAlias" \
-                --key-pass "pass:$keyPassword" \
-                --v1-signing-enabled true \
-                --v2-signing-enabled true \
-                --v3-signing-enabled true \
-                --v4-signing-enabled true \
-                "$apk"
-            fi
-            "$APKSIGNER" verify --print-certs "$apk"
-            echo "✓ $(basename "$apk") has valid v2/v3 signing"
-          done
+        run: bash tools/ci/verify-apk-signing.sh --properties release/keystore.properties
       - name: Unit tests
         run: gradle :app:testDebugUnitTest --stacktrace

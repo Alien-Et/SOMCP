@@ -19,7 +19,12 @@ under `SOMCP_*` names, and refers to them by `$SOMCP_*` /
   3. every workflow that sets up Gradle seeds the distribution from the mirror
      first (see tools/seed-gradle.sh) — dropping that step silently restores the
      fragile "download from services.gradle.org and hope" path that failed run
-     42469477147, and nothing else would notice.
+     42469477147, and nothing else would notice;
+  4. the native-build blocks that were extracted into tools/ci/*.sh are *called*,
+     not re-inlined. Three copies of "build the Unidbg natives" had already
+     drifted (only test-v11 had the cache-hit skip), so checks was validating a
+     different code path than release built. An inlined copy reproduces exactly
+     that: the workflow passes, the shared script rots.
 
 Run from the repository root: python3 tools/check-workflow-versions.py
 Exit code 0 = consistent, 1 = problems found.
@@ -74,6 +79,36 @@ NEEDS_GRADLE = ("build.yml", "release.yml", "test-v11.yml")
 # "bumped one, forgot the other" edit.
 GRADLE_DIST_VERSIONED_SHA256 = {
     "9.6.1": "9c0f7faeeb306cb14e4279a3e084ca6b596894089a0638e68a07c945a32c9e14",
+}
+
+# Blocks that used to have three near-identical copies in the workflows and now
+# live in tools/ci/. Each entry is (script, a regex that would betray the block
+# being pasted back into a workflow). The workflows must call the script.
+SHARED_SCRIPTS = {
+    "tools/ci/install-build-tools.sh": re.compile(r"apt-get install\b"),
+    "tools/ci/clone-rizin.sh": re.compile(r"ls-remote --tags[^\n]*rizinorg/rizin"),
+    "tools/ci/build-unidbg-natives.sh": re.compile(r"build-unidbg-native\.sh --abi"),
+    "tools/ci/build-rz-ghidra.sh": re.compile(r"bash build-rz-ghidra-android\.sh"),
+    "tools/ci/verify-rz-ghidra.sh": re.compile(r"libcore_ghidra\.so after build-rz-ghidra"),
+    "tools/ci/restore-keystore.sh": re.compile(r"base64 -d"),
+    "tools/ci/make-ci-keystore.sh": re.compile(r"keytool -genkey"),
+    "tools/ci/verify-apk-signing.sh": re.compile(r"build-tools/\d+\.\d+\.\d+/apksigner"),
+}
+
+# Workflows that must call each shared script (by repo-relative path) at least
+# once. blutter-engines.yml builds no APK but does apt-install, so it shares
+# only the first one; make-ci-keystore.sh is the fork-PR fallback and only
+# test-v11.yml has it.
+SHARED_SCRIPT_USERS = {
+    "tools/ci/install-build-tools.sh": (
+        "build.yml", "release.yml", "test-v11.yml", "blutter-engines.yml"),
+    "tools/ci/clone-rizin.sh": ("build.yml", "release.yml", "test-v11.yml"),
+    "tools/ci/build-unidbg-natives.sh": ("build.yml", "release.yml", "test-v11.yml"),
+    "tools/ci/build-rz-ghidra.sh": ("build.yml", "release.yml", "test-v11.yml"),
+    "tools/ci/verify-rz-ghidra.sh": ("build.yml", "release.yml", "test-v11.yml"),
+    "tools/ci/restore-keystore.sh": ("build.yml", "release.yml", "test-v11.yml"),
+    "tools/ci/make-ci-keystore.sh": ("test-v11.yml",),
+    "tools/ci/verify-apk-signing.sh": ("build.yml", "release.yml", "test-v11.yml"),
 }
 
 ENV_BLOCK_RE = re.compile(r"^env:\n((?:[ \t]+.*\n|\n)*)", re.MULTILINE)
@@ -144,8 +179,23 @@ def main() -> int:
                     "the mirror seeding replaces it"
                 )
 
-        # No hard-coded copy of a pinned value outside comments.
+        # The extracted blocks must stay extracted: call the script, do not
+        # re-inline it. (Three copies of the Unidbg block had already drifted.)
         body = strip_comments(text)
+        for script, telltale in SHARED_SCRIPTS.items():
+            users = SHARED_SCRIPT_USERS.get(script, ())
+            if name in users and script not in body:
+                problems.append(
+                    f"{name}: expected a call to {script} — this block is shared, "
+                    "not per-workflow"
+                )
+            if telltale.search(body):
+                problems.append(
+                    f"{name}: `{telltale.pattern}` looks like {script} inlined back "
+                    "into the workflow — call the shared script instead"
+                )
+
+        # No hard-coded copy of a pinned value outside comments.
         for key, pattern in PINNED.items():
             if key not in env:
                 continue

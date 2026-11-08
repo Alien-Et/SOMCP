@@ -366,6 +366,10 @@ Verify and ensure v2/v3 APK signing
 Upload APK
 ```
 
+原生构建这几段（apt 工具、Rizin 克隆、Unidbg、rz-ghidra、keystore 恢复、
+APK 签名校验）统一收在 `tools/ci/` 的共享脚本里，四个工作流都调同一份，
+避免「checks 走一条路径、release 走另一条」。
+
 产物：
 
 ```text
@@ -543,6 +547,14 @@ bash build-native-android.sh
   `SOMCP_NDK` / `SOMCP_CMAKE` / `SOMCP_GRADLE_DIST_MIRROR` /
   `SOMCP_GRADLE_DIST_SHA256`），`upload-artifact` 统一 `@v7`；
   `tools/check-workflow-versions.py` 守卫跨文件一致性并接入 CI
+- 七个重复的 shell 片段抽到 `tools/ci/`，其中六组**已经分叉**：只有 `build.yml`
+  的 Rizin 克隆带 3 次重试、只有 `test-v11.yml` 的 Unidbg / rz-ghidra 带 cache
+  跳过、只有 `test-v11.yml` 的 keystore 恢复缺 `tr -d '[:space:]'`、
+  `install-build-tools` 的包清单四份四个样、`verify-apk-signing` 三处各自硬编码
+  `build-tools/36.0.0`。跳过用 `--skip-existing`（默认关 = build/release 原行为
+  不变），签名参数用 `--properties` 分流到 `keystore.properties`（fork PR 的
+  一次性密钥）；apksigner 路径改从 `$SOMCP_BUILD_TOOLS` 推导，影子副本消除。
+  守卫新增 `SHARED_SCRIPTS` / `SHARED_SCRIPT_USERS` 查「该调的调了」「不许内联回去」
 - CI keystore 恢复：`tr -d '[:space:]'` 去空白 + `keytool -list` 校验
 
 **第二轮全项目扫描（2026-11-07）**

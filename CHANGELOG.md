@@ -33,6 +33,46 @@
 - **`build-native-android.sh` 的 LIEF 配置缺 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`（低）**。
   LIEF 0.16.1 声明 3.24 所以实际能过,但与 `build-rz-ghidra-android.sh` /
   `build-unidbg-native.sh` 对齐后,将来 pin 挪到老 tag 也不会再踩同一个坑。
+- **七个重复的 shell 片段抽到 `tools/ci/`，其中六组已经分叉（中）**。
+  四个构建工作流各自内联同一批原生构建片段，审计后发现分歧不是理论风险而是既成事实：
+
+  | 脚本 | 原来几份 | 已存在的分歧 |
+  | --- | --- | --- |
+  | `install-build-tools.sh` | 4 | `build.yml` 带 `cmake`，其余三个不带；`blutter-engines.yml` 的包顺序又是另一种 |
+  | `clone-rizin.sh` | 3 | **只有 `build.yml` 带 3 次重试**，`release.yml` / `test-v11.yml` 是裸 `git clone`，一次网络抖动就红 |
+  | `build-unidbg-natives.sh` | 3 | `test-v11.yml` 有 cache-hit 跳过，`build.yml` / `release.yml` 没有 → checks 验的是另一条代码路径 |
+  | `build-rz-ghidra.sh` | 3 | 同上 |
+  | `verify-rz-ghidra.sh` | 3 | 三份逐字节相同，抽出只为「以后加 ABI 只改一处」 |
+  | `restore-keystore.sh` / `make-ci-keystore.sh` | 3 | **`test-v11.yml` 缺 `tr -d '[:space:]'`** —— 正是历史上 `base64: invalid input` 那个坑 |
+  | `verify-apk-signing.sh` | 3 | 三处**各自硬编码 `build-tools/36.0.0`**，是 `SOMCP_BUILD_TOOLS` 的影子副本，守卫抓不到 |
+
+  两条原则保证「优化 CI 但不影响构建」：
+  1. **跳过逻辑用 `--skip-existing` 开关表达，默认关**。`build.yml` / `release.yml`
+     的行为逐字节不变（它们本来就无跳过），只有 `test-v11.yml` 传开启（它本来就带
+     `actions/cache`，那层判断属于它的既有语义）。
+  2. **签名参数用 `--properties` 分流**。默认读 `$STORE_FILE` / `$STORE_PASSWORD` /
+     `$KEY_ALIAS` / `$KEY_PASSWORD`（build/release）；`test-v11.yml` 传
+     `--properties release/keystore.properties`，因为 fork PR 拿不到 secrets，四个值
+     是运行时生成的一次性 CI 密钥，只能落文件。
+
+  `verify-apk-signing.sh` 顺带修掉影子副本：apksigner 路径改为从 `$SOMCP_BUILD_TOOLS`
+  推导（`build-tools;36.0.0` → `build-tools/36.0.0/apksigner`）。原来三处各写死
+  `36.0.0`，一旦把 `SOMCP_BUILD_TOOLS` 升到 36.1.0，要么路径不存在直接红，要么（更糟）
+  用旧版 apksigner 去验新版 build-tools 签出的包 —— 验的与签的不是同一个工具。
+
+  另外删掉 `release.yml` / `test-v11.yml` 的 Blutter best-effort 步骤里那句
+  `sudo apt-get install -y --no-install-recommends cmake ninja-build`（`install-build-tools.sh`
+  已装，重复装只是多花时间）。
+
+  `tools/check-workflow-versions.py` 新增 `SHARED_SCRIPTS` + `SHARED_SCRIPT_USERS`
+  两张表（覆盖全部 8 个脚本）：每个共享脚本必须被对应工作流**调用**，且不许把脚本内部
+  的特征文本粘回工作流（`apt-get install\b`、`base64 -d`、`keytool -genkey`、
+  `bash build-rz-ghidra-android\.sh`、`build-tools/\d+\.\d+\.\d+/apksigner` 等）。
+  删掉调用或内联回去，`test-v11.yml` 第 10 步立刻红。
+
+  四个工作流合计 **-299 行**（`build.yml` 295→203、`release.yml` 1052→956、
+  `test-v11.yml` 437→326、`blutter-engines.yml` 172→170）。
+
 - **Gradle 发行包会被上游 504 直接打断,「重试一次」救不了（中）**。
   下载链是 `services.gradle.org/distributions/...` → 307 跳 GitHub release
   资产 CDN,而该 CDN 会整段时间 504(实测 run 42469477147:本机连试三次全

@@ -91,9 +91,7 @@ jobs:
         run: sdkmanager "$SOMCP_NDK"
 
       - name: Install native build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake ninja-build meson gcc g++ pkg-config
+        run: bash tools/ci/install-build-tools.sh
 
       - name: Narrow the curated list (optional)
         if: ${{ inputs.dartVersions != '' }}
