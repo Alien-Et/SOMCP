@@ -25,7 +25,7 @@ LIEF 重写与修复、补丁会话、构建导出、Flutter AOT 分析、JNI �
 | 项 | 值 |
 | --- | --- |
 | 包名 | `com.soreverse.mcp` |
-| 版本 | `1.0.24`（`versionCode` 25） |
+| 版本 | `1.0.25`（`versionCode` 26） |
 | 最低系统 | Android 8.0 / API 26 |
 | 目标 SDK | 36 |
 | 默认端口 | `8000` |
@@ -572,6 +572,32 @@ bash build-native-android.sh
   `3.11.5 / 3.12.2 / 3.13.0 / 3.13.1` + 4 个 beta，正好覆盖本机实测遇到的版本）。
 - 体积账：一个 runner 约 12.6 MB；覆盖设备上全部 Flutter 应用只需 **2–3 个版本 ≈ 25–38 MB**。
 
+**第六轮：MCP 传输层两处规范违规 —— 「服务端 200、客户端却说没连上」（2026-11-08）**
+
+现象：SOMCP 进程活着、HTTP 200、81 个工具全部正常响应，但客户端的工具通道整体不可用，
+报 `MCP client <uuid> is not connected`。用 `curl` 直接打 `127.0.0.1:8000/mcp` 拿到 200，
+证明服务端没问题，再查两处规范细节，两个都违反：
+
+- **`initialize` 不签发 `Mcp-Session-Id`**。规范要求服务端签发、客户端后续每个请求回传。
+  本服务不保存会话状态，id 是身份令牌而非状态句柄 —— 但它仍必须被签发：拿不到 id 的客户端
+  无法区分「我的会话还活着」和「我的会话已经没了」。新增 `Sessions`：签发 UUID（客户端已带
+  则沿用）、每个请求刷新 `lastSeen`、TTL 1 小时 + 上限 64 条 LRU、未见过的 id 宽松采纳不 404。
+- **`GET /mcp` 是「写完即 EOF 的假 SSE」**。旧实现用 `respondText(...)` 返回 SSE，产出的是
+  **完整响应**（`Content-Length: 75`）并在写完立刻关闭连接；客户端发这个请求就是为了订阅
+  服务端推送，拿到瞬间 EOF 会读作「连接掉了」。改成 `respondTextWriter(...)` 进入循环，
+  每 10 秒 `: keep-alive` + `flush()`（间隔必须明显小于 CIO idle 超时 45s），并发上限 8 条。
+- 补 `DELETE /mcp` → `204`；旧版 `GET /sse` 同样改成真流（`event: endpoint` 握手后保持长连接）。
+
+| 项 | 修前 | 修后 |
+| --- | --- | --- |
+| `initialize` 响应头 | 无 `Mcp-Session-Id` | `Mcp-Session-Id: b01f02a3-…` |
+| `GET /mcp` | `Content-Length: 75`，立即 EOF | `Transfer-Encoding: chunked`，每 10s `: keep-alive` |
+| `DELETE /mcp` | 无此路由 | `204 No Content` |
+
+> 排查这段时踩到一件容易误判的事：**对方 App 被系统杀掉**也会让客户端报「未连接」，
+> 而那与 SOMCP 无关（实测 NP Manager 的端口回 `{"code":403,"message":"MCP server is not enabled"}`）。
+> 两条判据（服务端 200 / `initialize` 是否签发 id / `GET /mcp` 是 chunked 还是 Content-Length）
+> 已写进 `docs/18.错误码与排障.md`。
 **第五轮：ELF / APK 审计工具全部失真，用真实样本逐个复现并修复（2026-11-08）**
 
 本轮用 某开源测试应用（`com.example.tool`）的 `样本A.so` / `样本C.so` / `样本B.so`

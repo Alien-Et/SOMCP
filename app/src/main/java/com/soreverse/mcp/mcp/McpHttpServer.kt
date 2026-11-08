@@ -42,13 +42,21 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.header
 import io.ktor.server.request.receiveText
 import io.ktor.server.request.uri
+import io.ktor.server.response.header
+import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
+import io.ktor.server.response.respondTextWriter
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import java.io.File
 import java.security.MessageDigest
+import java.util.UUID
 import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -87,6 +95,109 @@ class McpHttpServer(private val context: Context, private val port: Int, private
         }
         fun reset(name: String? = null) = synchronized(lock) {
             if (name == null) byTool.clear() else byTool.remove(name)
+        }
+    }
+
+    /**
+     * MCP Streamable-HTTP session identities.
+     *
+     * The 2025-06-18 spec has the server return an `Mcp-Session-Id` on the
+     * `initialize` response, and the client echo it on every later request.
+     * This server keeps no per-session state, so the id is an identity token
+     * rather than a state handle — but it still has to be *issued*. A client
+     * that never receives one cannot distinguish "my session is alive" from
+     * "my session is gone", which is exactly how "the server answers HTTP 200
+     * but the client insists it is not connected" happens.
+     *
+     * Deliberately lenient: a client-supplied id we have never seen is adopted
+     * rather than answered with 404. Requiring ids would turn a stale id (for
+     * example one cached across an app restart) into a hard failure for no
+     * gain, since nothing is stored per session anyway. Issued ids are pruned
+     * by TTL and by count so the map cannot grow without bound.
+     */
+    private object Sessions {
+        private const val MAX_SESSIONS = 64
+        private const val TTL_MS = 60L * 60L * 1000L
+        private val lock = Any()
+        private val issued = LinkedHashMap<String, Long>()
+
+        fun issue(): String = synchronized(lock) {
+            val id = UUID.randomUUID().toString()
+            issued[id] = System.currentTimeMillis()
+            pruneLocked()
+            id
+        }
+
+        /** Refresh a seen id, or adopt an unseen one (this server never requires ids). */
+        fun touch(id: String): Unit = synchronized(lock) {
+            issued[id] = System.currentTimeMillis()
+            pruneLocked()
+        }
+
+        fun drop(id: String): Unit = synchronized(lock) {
+            issued.remove(id)
+        }
+
+        private fun pruneLocked() {
+            val cutoff = System.currentTimeMillis() - TTL_MS
+            val it = issued.entries.iterator()
+            while (it.hasNext()) if (it.next().value < cutoff) it.remove()
+            while (issued.size > MAX_SESSIONS) {
+                val oldest = issued.entries.minByOrNull { it.value } ?: break
+                issued.remove(oldest.key)
+            }
+        }
+    }
+
+    /**
+     * Cap on concurrently open SSE streams. Each one parks a coroutine and a
+     * socket until the peer goes away, so an abandoned stream (no TCP FIN) is
+     * only reaped on the next keep-alive write. A phone should not be talked
+     * into holding an unbounded number of them.
+     */
+    private val sseStreams = AtomicInteger(0)
+    private val maxSseStreams = 8
+
+    /**
+     * Serve a real, long-lived SSE stream.
+     *
+     * The previous implementation answered `GET /mcp` with `respondText(...)`,
+     * which produces a *complete* response (`Content-Length: 75`) that closes
+     * immediately. Clients open that request expecting a stream, so an instant
+     * EOF reads as "the connection dropped" — the server looks dead while it is
+     * perfectly healthy. A stream has to stay open, and it needs periodic
+     * comments so intermediaries and the engine's idle timeout do not reap it.
+     */
+    private suspend fun respondSse(call: ApplicationCall, initialFrames: List<String>) {
+        if (sseStreams.incrementAndGet() > maxSseStreams) {
+            sseStreams.decrementAndGet()
+            call.respondText(
+                JSONObject().put("error", "too many concurrent SSE streams").toString(),
+                ContentType.Application.Json,
+                status = HttpStatusCode.ServiceUnavailable
+            )
+            return
+        }
+        try {
+            call.respondTextWriter(ContentType.Text.EventStream, HttpStatusCode.OK) {
+                try {
+                    for (frame in initialFrames) {
+                        write(frame)
+                        flush()
+                    }
+                    while (true) {
+                        delay(SSE_KEEPALIVE_MS)
+                        write(": keep-alive\n\n")
+                        flush()
+                    }
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Throwable) {
+                    // Peer closed the socket, or the server is shutting down.
+                }
+            }
+        } finally {
+            sseStreams.decrementAndGet()
         }
     }
 
@@ -152,7 +263,9 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                     }
                     val accept = call.request.header("Accept").orEmpty()
                     if (accept.contains("text/event-stream")) {
-                        call.respondText(sseHello(), ContentType.Text.EventStream)
+                        call.request.header("Mcp-Session-Id")?.takeIf { it.isNotBlank() }
+                            ?.let { Sessions.touch(it) }
+                        respondSse(call, emptyList())
                     } else {
                         call.respondText(serverDiscovery().toString(), ContentType.Application.Json)
                     }
@@ -167,7 +280,25 @@ class McpHttpServer(private val context: Context, private val port: Int, private
                         )
                         return@get
                     }
-                    call.respondText(sseHello(), ContentType.Text.EventStream)
+                    // Legacy HTTP+SSE handshake (protocol 2024-11-05). The
+                    // `endpoint` event is only a handshake if the stream then
+                    // *stays open* — a one-shot body is not a usable transport.
+                    respondSse(call, listOf(sseEndpointFrame()))
+                }
+                delete("/mcp") {
+                    if (call.rejectUntrustedOrigin()) return@delete
+                    if (!call.authorized()) {
+                        call.respondText(
+                            authError().toString(),
+                            ContentType.Application.Json,
+                            status = HttpStatusCode.Unauthorized
+                        )
+                        return@delete
+                    }
+                    // Spec: the client MAY terminate a session with DELETE.
+                    call.request.header("Mcp-Session-Id")?.takeIf { it.isNotBlank() }
+                        ?.let { Sessions.drop(it) }
+                    call.respond(HttpStatusCode.NoContent)
                 }
                 post("/mcp") {
                     handleJsonRpcPost(call)
@@ -225,7 +356,18 @@ class McpHttpServer(private val context: Context, private val port: Int, private
             )
             return
         }
+        // Session identity. Echo-aware but never required (see Sessions).
+        // A client-supplied id is refreshed; `initialize` is where the server
+        // hands one out, which is what lets the client keep a live session.
+        val clientSessionId = call.request.header("Mcp-Session-Id")?.takeIf { it.isNotBlank() }
+        clientSessionId?.let { Sessions.touch(it) }
+        val initializing = requestMethodOf(body) == "initialize"
         val response = dispatchBody(body)
+        if (initializing) {
+            val sessionId = clientSessionId ?: Sessions.issue()
+            Sessions.touch(sessionId)
+            call.response.header("Mcp-Session-Id", sessionId)
+        }
         // Notifications produce no response body: reply 202 Accepted with an
         // empty body per the MCP streamable-HTTP spec. Sending a JSON-RPC
         // response (or an id=null result) for a notification breaks strict
@@ -268,9 +410,15 @@ class McpHttpServer(private val context: Context, private val port: Int, private
             "POST JSON-RPC to /mcp. GET /mcp with Accept: text/event-stream returns an SSE compatibility hello."
         )
 
-    private fun sseHello(): String {
+    /**
+     * First frame of the legacy HTTP+SSE handshake: it tells the client where
+     * to POST its JSON-RPC messages. It is emitted *before* the keep-alive loop
+     * rather than bundled with it, so a client that only reads the first frame
+     * (the handshake) is not made to wait for a keep-alive tick.
+     */
+    private fun sseEndpointFrame(): String {
         val endpoint = JSONObject().put("uri", "/messages").put("method", "POST")
-        return "event: endpoint\ndata: $endpoint\n\n: SOMCP ready\n\n"
+        return "event: endpoint\ndata: $endpoint\n\n"
     }
 
     private fun dispatchBody(body: String): Any {
@@ -391,6 +539,21 @@ class McpHttpServer(private val context: Context, private val port: Int, private
         return JSONObject().put("jsonrpc", "2.0").put("id", id).put("result", result)
     }
 
+    /**
+     * Peek at the JSON-RPC method of a request body, without dispatching it.
+     * Used to recognise `initialize` so its response can carry the session id
+     * header. Batches (arrays) have no single method and return null.
+     */
+    private fun requestMethodOf(body: String): String? {
+        val trimmed = body.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith("[")) return null
+        return try {
+            JSONObject(trimmed).optString("method").takeIf { it.isNotBlank() }
+        } catch (_: JSONException) {
+            null
+        }
+    }
+
     private fun jsonRpcError(id: Any?, code: Int, message: String): JSONObject = JSONObject()
         .put("jsonrpc", "2.0")
         .put("id", id ?: JSONObject.NULL)
@@ -399,6 +562,14 @@ class McpHttpServer(private val context: Context, private val port: Int, private
     // Sentinel meaning "this request was a notification; emit no JSON-RPC
     // response". Compared by identity (===). Never serialized to a client.
     private val noResponse: JSONObject = JSONObject().put("__noResponse", true)
+
+    private companion object {
+        /**
+         * SSE keep-alive interval. Must stay well under the CIO engine's idle
+         * timeout (default 45s) so a stream is never reaped between ticks.
+         */
+        const val SSE_KEEPALIVE_MS = 10_000L
+    }
 
     private fun toolUsageGuide(): JSONObject = JSONObject()
         .put(

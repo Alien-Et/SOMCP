@@ -1,6 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
 # 更新日志
+## 1.0.25
+- **MCP 传输层两处规范违规，就是「服务端 HTTP 200 但客户端说未连接」的成因**（`McpHttpServer.kt`）。现象是 SOMCP 进程活着、81 个工具全部正常响应、`curl` 打 `127.0.0.1:8000/mcp` 返回 200，但客户端的工具调用通道整体不可用，报 `MCP client <uuid> is not connected`。
+  - **`initialize` 没有签发 `Mcp-Session-Id`**。MCP 2025-06-18 要求服务端在 `initialize` 响应里返回会话 id、客户端在后续每个请求上回传。本服务本来就不保存会话状态，所以这个 id 是身份令牌而非状态句柄 —— 但它仍然必须被签发：拿不到 id 的客户端无法区分「我的会话还活着」和「我的会话已经没了」。新增 `Sessions`：签发 UUID（客户端已带则沿用）、每个请求刷新 `lastSeen`、TTL 1 小时 + 上限 64 条按最久未用淘汰、**未见过**的 id 宽松采纳而不返回 404（本服务不要求 id，把过期 id 变成硬失败没有收益）。
+  - **`GET /mcp` 是「写完即 EOF 的假 SSE」**：旧实现用 `respondText(...)` 返回 SSE，产出的是**完整响应**（`Content-Length: 75`）并在写完立刻关闭连接。客户端发这个请求就是为了订阅服务端推送，拿到瞬间 EOF 会读作「连接掉了」—— 服务端看起来是死的，其实完全健康。新增 `respondSse()`：`respondTextWriter(ContentType.Text.EventStream)` 进入循环并每 10 秒 `write(": keep-alive\n\n")` + `flush()`；keep-alive 间隔必须明显小于 CIO 引擎的 idle 超时（默认 45s），否则流会在两次 tick 之间被回收；并发流上限 8 条，超出返回 `503`（每条流占一个协程和一个 socket，被遗弃的流只会在下一次写 keep-alive 时才回收）。旧版 `GET /sse` 同样处理，握手帧改成 `event: endpoint` 后保持长连接。
+  - **补上 `DELETE /mcp`**（规范允许客户端以 DELETE 终止会话）：移除该 id 并返回 `204 No Content`。
+  - **实测对照**：`initialize` 响应头从「无 `Mcp-Session-Id`」变成 `Mcp-Session-Id: b01f02a3-…`；`GET /mcp` 从 `Content-Length: 75` + 立即 EOF 变成 `Transfer-Encoding: chunked` + 25 秒内 2 条 `: keep-alive`；带会话 id 调 `tools/list` = `200`，未见过的 id = `200`，`DELETE /mcp` = `204`，`GET /sse` = `chunked` + `event: endpoint` 握手帧 + keep-alive。
+  - **同轮排障方法写进文档**：`18.错误码与排障.md` 新增「客户端显示未连接但服务端 HTTP 200」一节，给出三条判据（服务端 200 / `initialize` 是否签发 id / `GET /mcp` 是 chunked 还是 Content-Length），并说明**另一个常被误判成同一件事的原因**：对方 App 被系统杀掉导致它自己的 MCP 服务没起来（实测 NP Manager 的端口回 `{"code":403,"message":"MCP server is not enabled"}`，与 SOMCP 无关）。
+  - **回归**：32 项功能断言全通过（ELF 审计 22 项含 `elf_hash_tables` 的 `hasGnu:true`、`code_padding_caves` 无结构性节误报、`str_literal_classes` 的 `base64_like=0`；APK 审计 4 项 `verdict: verified` / `parsedBytes: 529768` / `findings: []`；编辑闭环 4 项 `patch_apply_verify: pass` / `build_so` sha 一致；纯函数 2 项）。
 
 ## 1.0.24
 - **APK 审计四件套此前全部失真，根因是三处字节解析错误（本轮用真实 APK 逐个复现并修复）**：
