@@ -515,7 +515,18 @@ bash build-native-android.sh
   （`arm64-v8a` 结尾是 `v8a` 不是 `64`，原逻辑恒 false，导致 arm64 设备误报 32 位）
 - `apk_analyze` 外部路径 `EACCES`
 - `so_open(action=list)` 在无工作目录时返回空列表
-- CI CMake 4.x 兼容：`-DCMAKE_POLICY_VERSION_MINIMUM=3.5` + 幂等 sed 修 `cmake_policy(SET CMP0048 OLD)`
+- CI CMake 4.x 兼容：`-DCMAKE_POLICY_VERSION_MINIMUM=3.5` + 幂等 sed 修
+  任意 `cmake_policy(SET CMPxxxx OLD)`（含 keystone/LLVM 的 `CMP0051`）
+  与任意 `< 3.5` 的 `cmake_minimum_required`（含 `2.8.7` 这类高位 minor）；
+  递归整棵 `third_party/` 源码树，三个原生脚本共用同一套规范化
+- `test-v11.yml` 补装 `cmake;3.22.1`（与 `build.yml` / `release.yml` 对齐，
+  否则 Unidbg 步骤回落到 runner 的 CMake 4.4 并在 keystone 配置阶段挂掉）
+- `setup-gradle` 的 504 重试（`services.gradle.org` 偶发不可用）
+- 删除 `test.yml` + `test-v2..v10` 十个从未运行过的迭代残骸，只留 `test-v11.yml`
+- 工具链版本收敛到每个工作流顶层的 `env:` 块（`SOMCP_JAVA_VERSION` /
+  `SOMCP_GRADLE_VERSION` / `SOMCP_ANDROID_PLATFORM` / `SOMCP_BUILD_TOOLS` /
+  `SOMCP_NDK` / `SOMCP_CMAKE`），`upload-artifact` 统一 `@v7`；
+  `tools/check-workflow-versions.py` 守卫跨文件一致性并接入 CI
 - CI keystore 恢复：`tr -d '[:space:]'` 去空白 + `keytool -list` 校验
 
 **第二轮全项目扫描（2026-11-07）**

@@ -2,6 +2,52 @@
 
 # 更新日志
 
+## 未发布（CI 修复）
+
+- **工具链版本收敛到一处定义（中）**。三个构建工作流原来各自硬编码 JDK /
+  Gradle / Android platform / build-tools / NDK / cmake，`upload-artifact` 还
+  一个用 `@v7` 一个用 `@v4`。现在每个工作流在顶层 `env:` 块里声明一次
+  （`SOMCP_JAVA_VERSION` / `SOMCP_GRADLE_VERSION` / `SOMCP_ANDROID_PLATFORM` /
+  `SOMCP_BUILD_TOOLS` / `SOMCP_NDK` / `SOMCP_CMAKE`，三个文件里的块字节相同），
+  下面一律用 `$SOMCP_*` 引用；`blutter-engines.yml` 只声明它真正需要的
+  `SOMCP_NDK`。`upload-artifact` 统一到 `@v7`。
+  新增 `tools/check-workflow-versions.py`：查「该声明的是否都声明了」「`env:` 之外
+  有没有硬编码副本」「同名变量跨文件是否同值」，并在 `test-v11.yml` 里作为
+  `Workflow toolchain version consistency` 步骤跑起来。
+  为什么必须一致：checks 用 A 版本编译通过、release 用 B 版本发布，checks 的
+  绿灯就证明不了 release 能构建 —— 历史上 `test-v11.yml` 少装 Unidbg 与
+  rz-ghidra 两步时就是这样，checks 全绿而只有 release 包里带着那两样。
+
+- **`test-v11.yml` 的 Unidbg 步骤必挂：CMake 4.x 拒绝 `cmake_policy(SET CMP0051 OLD)`（高）**。
+  keystone（及其内置 LLVM）的 `CMakeLists.txt` 里写着 `cmake_policy(SET CMP0051 OLD)`,
+  runner 自带 CMake 4.4 直接当错误处理,`cmake` 在配置阶段退出,整个 `checks` 红。
+  三层修复:
+  1. `test-v11.yml` 补装 `cmake;3.22.1` —— `build.yml` / `release.yml` 一直装了,
+     只有它漏了,于是回落到系统 cmake 4.4。
+  2. `build-unidbg-native.sh` 的规范化从「只改 `$src/CMakeLists.txt` 一个文件、
+     只认 `CMP0048` + `VERSION 2.x`」扩到「递归整棵源码树(跳过 `.git/`)、
+     认任意 `CMPxxxx OLD` 与任意 `< 3.5` 的最低版本」。keystone 需要改的 6 处
+     (根 / `llvm/` / `kstool/` / `samples/`) 现在全部覆盖,且幂等。
+  3. 顺带把 `cmake_minimum_required(VERSION 2.8.7)` 这类**高位 minor** 也纳入
+     (旧正则只匹配 `3.0`–`3.4` 与 `2.x`,漏掉了 `2.8.7`)。
+- **`build-native-android.sh` 的 LIEF 配置缺 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`（低）**。
+  LIEF 0.16.1 声明 3.24 所以实际能过,但与 `build-rz-ghidra-android.sh` /
+  `build-unidbg-native.sh` 对齐后,将来 pin 挪到老 tag 也不会再踩同一个坑。
+- **三个工作流的 `gradle/actions/setup-gradle@v4` 会被上游 504 直接打断（中）**。
+  该 action 从 `services.gradle.org` 拉发行包,服务偶发 504,action 自身只重试
+  两次(约 35 秒)就判定失败 —— 整条流水线在第一个业务步骤之前就红了(实测
+  run 42466197798)。改成 `continue-on-error: true` + 一条重复步骤,
+  仅在前一次 `outcome == 'failure'` 时执行。
+- **`test-v11.yml` / `release.yml` 加 `timeout-minutes: 150`（低）**。
+  两者都没有 job 级超时,默认 360 分钟;卡死的原生构建能占住 runner 六小时。
+  实测冷启动约 65 分钟,150 分钟留约 2 倍余量。
+- **删除 `test.yml` 与 `test-v2..v10` 十个死工作流（低）**。
+  同一套 checks 门禁的迭代残骸,全部只接 `workflow_dispatch`,
+  GitHub API 对每一个都返回 `total_count: 0`(一次都没跑过)。
+  `pr-auto-review.yml` 的 `pushTriggered` 补触发列表同步收敛为
+  `['build.yml', 'test-v11.yml']`,两处写死的「test-v7.yml」注释订正为
+  `test-v11.yml`。
+
 ## 1.0.33
 - **修掉 1.0.29 记录的 3 项遗留问题**（同一真实大样本上复测通过）。
   - **`obfusc_api` 在非混淆库上大面积误报（中）**。判据只有「dispatcher fan-in ≥ 3 + 薄块比」，而普通 C++ 天然会制造共享尾部（错误汇聚、`operator delete` 尾声、异常清理），于是 libc++ 模板代码被判成 `flattened`/`confidence: high`，与 `workspace_overview` 的 `ollvm: false` 直接矛盾。实测一个 587 块的非混淆函数被判出 **49 个 dispatcher**（平均入度 1.63），完全不是「枢纽」。修法：dispatcher 必须**同时**满足「入度 ≥ 函数平均入度的 3 倍」和「入度 ≥ 函数总边数的 25%」—— 真正的 CFF 会把原 CFG 的每条边都换成 `state = K; goto dispatcher`，dispatcher 因此收走大部分边；共享尾部只收走一小撮。同一样本复测：`overall: clean`、`flattenedFunctions: 0`、`suspectedFunctions: 0`（原 6 flattened + 1 suspected），且 `dispatcherBlocks` 全部归 0。判据文案随响应下发（`method` 字段写明两个阈值），并补了 2 个回归单测（`doesNotFlagSharedCleanupTail` 守住误报、`detectsFlattenedControlFlow` 用真实星形拓扑守住漏报）。
