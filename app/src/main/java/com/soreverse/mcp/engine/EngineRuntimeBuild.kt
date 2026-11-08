@@ -241,21 +241,37 @@ internal fun EngineRuntime.fixSections(workspaceId: String, editSessionId: Strin
             elfBefore.dynamicEntries.size == elfAfter.dynamicEntries.size &&
             before.size == fixed.size
     if (onlyCanonicalization) {
+        // LIEF always re-emits the header tables, so `fixed` differs from
+        // `before` even when nothing structural changed. Reporting
+        // changed=false next to a 256-entry diffRanges array read as a
+        // contradiction: callers could not tell "nothing to do" from "we
+        // skipped a real rewrite". Split the two facts: `changed` describes
+        // what was APPLIED (nothing), `candidate` describes what LIEF would
+        // produce, and the diff only appears nested under `candidate` with a note.
         return ok(
             JSONObject()
                 .put("changed", false)
-                .put("wouldChange", true)
+                .put("verdict", "already_structured")
                 .put(
                     "message",
                     "Section headers are already present and parseable; skipped LIEF canonicalization rewrite"
                 )
                 .put("sha256Before", beforeHash)
                 .put("sha256After", beforeHash)
-                .put("candidateSha256After", afterHash)
-                .put("diffRangeCount", diffRanges.length())
-                .put("diffRanges", diffRanges)
-                .put("diffTruncated", diff.truncated)
-                .put("diffBytes", diff.diffBytes)
+                .put("candidate", JSONObject()
+                    .put("applied", false)
+                    .put("sha256After", afterHash)
+                    .put("diffRangeCount", diffRanges.length())
+                    .put("diffBytes", diff.diffBytes)
+                    .put("diffTruncated", diff.truncated)
+                    .put(
+                        "note",
+                        "These bytes are what LIEF would emit if the rewrite were forced. " +
+                            "They are NOT applied to this workspace; the header tables already " +
+                            "parse, so only formatting/canonicalization differs."
+                    )
+                    .put("diffRanges", diffRanges)
+                )
                 .put("beforeSections", elfBefore.sections.size)
                 .put("afterSections", elfAfter.sections.size)
                 .put("beforeProgramHeaders", elfBefore.programHeaders.size)
@@ -298,6 +314,7 @@ internal fun EngineRuntime.fixSections(workspaceId: String, editSessionId: Strin
     return ok(
         JSONObject()
             .put("changed", true)
+            .put("verdict", "rebuilt")
             .put("editSessionId", sessionId)
             .put("requestedEditSessionId", editSessionId)
             .put(

@@ -42,6 +42,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
+#include <csignal>
+#include <csetjmp>
 
 #define RZ_NATIVE_LOG(...) __android_log_print(ANDROID_LOG_INFO, "RzNative", __VA_ARGS__)
 #include <sys/stat.h>
@@ -57,6 +59,102 @@
 #include <rz_reg.h>
 
 namespace {
+    // ---------------------------------------------------------------------
+    // SIGSEGV containment for the Ghidra decompiler.
+    //
+    // rz_core_cmd_str(core, "pdg") reaches libcore_ghidra.so ->
+    // rz_core_annotated_code_print(), which dereferences a null
+    // RzAnalysisAnnotatedCode when the decompiler produced nothing. A JVM
+    // cannot catch that: the signal kills the whole MCP process (measured
+    // fault addr 0x730 on a stripped AArch64 .so). This guard turns the
+    // crash into an ordinary "decompiler failed" reply.
+    //
+    // Only SIGSEGV/SIGBUS/SIGILL/SIGFPE raised *while the guard is armed*
+    // are converted; anything else is re-raised against the previous handler
+    // so unrelated crashes still reach the platform crash reporter.
+    // ---------------------------------------------------------------------
+    std::mutex crashGuardMutex;
+    thread_local sigjmp_buf* tlsCrashJmp = nullptr;
+    thread_local volatile sig_atomic_t tlsCrashArmed = 0;
+    thread_local int tlsCrashSignal = 0;
+    struct sigaction gPrevSegv {};
+    struct sigaction gPrevBus {};
+    struct sigaction gPrevIll {};
+    struct sigaction gPrevFpe {};
+    bool gCrashHandlerInstalled = false;
+
+    void crashHandler(int sig, siginfo_t* info, void* uctx) {
+        if (tlsCrashArmed && tlsCrashJmp) {
+            tlsCrashSignal = sig;
+            tlsCrashArmed = 0;
+            siglongjmp(*tlsCrashJmp, 1);
+        }
+        // Not ours: restore the previous disposition and let the signal
+        // propagate so the tombstone still names the real faulting frame.
+        struct sigaction* prev = nullptr;
+        switch (sig) {
+            case SIGSEGV: prev = &gPrevSegv; break;
+            case SIGBUS:  prev = &gPrevBus;  break;
+            case SIGILL:  prev = &gPrevIll;  break;
+            case SIGFPE:  prev = &gPrevFpe;  break;
+            default: break;
+        }
+        if (prev) sigaction(sig, prev, nullptr);
+        raise(sig);
+    }
+
+    void installCrashHandlerOnce() {
+        std::lock_guard<std::mutex> lock(crashGuardMutex);
+        if (gCrashHandlerInstalled) return;
+        struct sigaction sa {};
+        sa.sa_sigaction = crashHandler;
+        sigemptyset(&sa.sa_mask);
+        // SA_NODEFER: the handler must be able to catch a second fault while
+        // unwinding a broken decompiler; SA_ONSTACK keeps stack-overflow
+        // recovery off the exhausted thread stack.
+        sa.sa_flags = SA_SIGINFO | SA_NODEFER | SA_ONSTACK;
+        sigaction(SIGSEGV, &sa, &gPrevSegv);
+        sigaction(SIGBUS,  &sa, &gPrevBus);
+        sigaction(SIGILL,  &sa, &gPrevIll);
+        sigaction(SIGFPE,  &sa, &gPrevFpe);
+        gCrashHandlerInstalled = true;
+        RZ_NATIVE_LOG("crash guard installed (SIGSEGV/SIGBUS/SIGILL/SIGFPE)");
+    }
+
+    /** Runs `fn` with the decompiler crash guard armed. Returns false when a
+     *  fatal signal was caught (the caller then reports a normal tool error). */
+    template <typename Fn>
+    bool runGuarded(Fn&& fn) {
+        installCrashHandlerOnce();
+        sigjmp_buf jmp;
+        sigjmp_buf* prevJmp = tlsCrashJmp;
+        const sig_atomic_t prevArmed = tlsCrashArmed;
+        tlsCrashJmp = &jmp;
+        tlsCrashArmed = 1;
+        tlsCrashSignal = 0;
+        if (sigsetjmp(jmp, 1) == 0) {
+            fn();
+            tlsCrashArmed = prevArmed;
+            tlsCrashJmp = prevJmp;
+            return true;
+        }
+        // Landed here from crashHandler: the decompiler dereferenced garbage.
+        tlsCrashArmed = 0;
+        tlsCrashJmp = prevJmp;
+        RZ_NATIVE_LOG("crash guard caught signal %d during decompile", (int)tlsCrashSignal);
+        return false;
+    }
+
+    const char* crashSignalName(int sig) {
+        switch (sig) {
+            case SIGSEGV: return "SIGSEGV";
+            case SIGBUS:  return "SIGBUS";
+            case SIGILL:  return "SIGILL";
+            case SIGFPE:  return "SIGFPE";
+            default:      return "SIGNAL";
+        }
+    }
+
     std::mutex ghidraConfigMutex;
     std::string ghidraPluginDir;
     std::string ghidraSleighHome;
@@ -1588,6 +1686,12 @@ Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzDecompile(
     const char* selected = nullptr;
     char* result = nullptr;
     std::string lastDiag;
+    // Set when the crash guard caught a fatal signal inside the decompiler.
+    // rz_core_cmd_str("pdg") reaches libcore_ghidra.so, which dereferences a
+    // null RzAnalysisAnnotatedCode when Ghidra produced nothing, so this is a
+    // reachable path and not a theoretical one: the whole MCP process used to
+    // die here (SIGSEGV at fault addr 0x730) instead of returning a tool error.
+    const char* crashSignal = nullptr;
     for (const char* cmd : commands) {
         // Seek again immediately before decompile so pdg uses the repaired function.
         if (RzAnalysisFunction* fcn = rz_analysis_get_function_at(core->analysis, va)) {
@@ -1596,7 +1700,16 @@ Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzDecompile(
         } else {
             rz_core_seek(core, va, true);
         }
-        result = rz_core_cmd_str(core, cmd);
+        // The guard must not leak a half-built RzCore state into the next
+        // command: after a caught signal the core is abandoned and only the
+        // error reply is produced (see the `crashSignal` branch below).
+        bool survived = runGuarded([&] { result = rz_core_cmd_str(core, cmd); });
+        if (!survived) {
+            crashSignal = crashSignalName(tlsCrashSignal);
+            RZ_NATIVE_LOG("ghidra command=%s aborted by %s (decompiler crashed)", cmd, crashSignal);
+            if (result) { free(result); result = nullptr; }
+            break;
+        }
         std::string text = stripAnsi(result ? result : "");
         RZ_NATIVE_LOG("ghidra command=%s len=%zu resized=%d size=%llu next=0x%llx output=%.200s",
             cmd, text.size(), resized ? 1 : 0,
@@ -1656,7 +1769,14 @@ Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzDecompile(
         out += escJson(stripAnsi(result));
         out += "\"}";
     } else {
-        out = "{\"ok\":false,\"error\":\"DECOMPILER_FAILED\",\"backend\":\"rizin-ghidra\",\"message\":\"decompiler produced no usable output for this function after analysis-boundary repair\",\"addr\":\"";
+        // A caught fatal signal is reported as a plain tool failure so callers
+        // see DECOMPILER_CRASHED instead of losing the whole server process.
+        out = crashSignal
+            ? "{\"ok\":false,\"error\":\"DECOMPILER_CRASHED\",\"backend\":\"rizin-ghidra\",\"message\":\"the rizin-ghidra decompiler raised a fatal signal and was isolated; the process is still healthy, use read_disasm without pseudocode or a different function\",\"signal\":\""
+            : "{\"ok\":false,\"error\":\"DECOMPILER_FAILED\",\"backend\":\"rizin-ghidra\",\"message\":\"decompiler produced no usable output for this function after analysis-boundary repair\",\"addr\":\"";
+        if (crashSignal) out += crashSignal;
+        out += crashSignal ? "\",\"addr\":\"" : "";
+
         char addr[32];
         snprintf(addr, sizeof(addr), "0x%llx", static_cast<unsigned long long>(funcVa));
         out += addr;
@@ -1673,7 +1793,15 @@ Java_com_soreverse_mcp_nativecore_RizinNativeEngine_rzDecompile(
         out += "\"}";
     }
     if (result) free(result);
-    cleanupCore(core, path);
+    // After a caught signal the RzCore/RzBin tree can be half-freed, so
+    // rz_core_free() itself may fault. Tear it down under the same guard and
+    // leak the core rather than crash the process we just rescued.
+    if (crashSignal) {
+        runGuarded([&] { cleanupCore(core, path); });
+        unlink(path.c_str());
+    } else {
+        cleanupCore(core, path);
+    }
     return env->NewStringUTF(out.c_str());
 }
 

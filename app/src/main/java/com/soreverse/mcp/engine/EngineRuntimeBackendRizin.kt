@@ -796,7 +796,13 @@ internal fun EngineRuntime.rzDecompile(workspaceId: String, editSessionId: Strin
         .put("requestedBackend", "rizin-ghidra")
         .put("usesBuiltinPseudo", false)
     val decompErr = payload.optString("error")
-    if ((decompErr == "DECOMPILER_UNAVAILABLE" || decompErr == "DECOMPILER_FAILED") && strict) {
+    // DECOMPILER_CRASHED is raised by the native crash guard when the
+    // rizin-ghidra decompiler dereferenced garbage (null RzAnalysisAnnotatedCode).
+    // The process survives because the fault is contained in rizin_core.cpp, so
+    // this is an ordinary tool error and not a transport failure.
+    if ((decompErr == "DECOMPILER_UNAVAILABLE" || decompErr == "DECOMPILER_FAILED" ||
+            decompErr == "DECOMPILER_CRASHED") && strict
+    ) {
         return@guarded err(
             decompErr,
             payload.optString("message"),

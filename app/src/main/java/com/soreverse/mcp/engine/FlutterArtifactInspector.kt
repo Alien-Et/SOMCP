@@ -63,14 +63,25 @@ internal object FlutterArtifactInspector {
      * ZipInputStream，拿不到 ZipFile 的随机访问），这里直接基于清单做
      * Flutter 判定，避免为了一个 `detected` 布尔值再开一次 root 流。
      */
+    /** Flutter assets are listed only up to this many entries. A real app
+     *  ships thousands of `assets/flutter_assets/**` files, and listing every
+     *  one of them made `apk_analyze` return ~159 KB of asset paths out of a
+     *  ~168 KB payload — the caller asked about the APK, not the asset tree.
+     *  The count and a sample stay in the reply so detection is still visible. */
+    private const val MAX_FLUTTER_ASSETS = 50
+
     fun inspectFlutterFromEntries(entries: JSONArray, path: String): JSONObject {
         val candidates = linkedMapOf<String, MutableMap<String, Any>>()
         val assets = JSONArray()
+        var assetTotal = 0
         for (i in 0 until entries.length()) {
             val obj = entries.optJSONObject(i) ?: continue
             val name = obj.optString("name")
             if (name.isBlank()) continue
-            if (name.startsWith("assets/flutter_assets/")) assets.put(name)
+            if (name.startsWith("assets/flutter_assets/")) {
+                assetTotal++
+                if (assets.length() < MAX_FLUTTER_ASSETS) assets.put(name)
+            }
             if (obj.optBoolean("directory", false)) continue
             if (!LIBRARY_ENTRY.matches(name)) continue
             val abi = name.split('/')[1]
@@ -81,17 +92,27 @@ internal object FlutterArtifactInspector {
             item[if (isApp) "libappSize" else "libflutterSize"] = size
         }
         val selected = selectAbi(candidates, "auto")
-        return JSONObject()
+        val result = JSONObject()
             .put("detected", selected != null)
             .put("mode", if (selected != null) "aot" else "unknown")
             .put("requestedAbi", "auto")
             .put("supportedAbis", JSONArray(candidates.keys))
+            .put("assetCount", assetTotal)
             .put("assets", assets)
+            .put("assetsTruncated", assetTotal > assets.length())
             .put("candidates", candidatesJson(candidates))
             .put(
                 "source",
                 "entry-list (streaming root path; assets list is limited to the returned entry window)"
             )
+        if (assetTotal > assets.length()) {
+            result.put(
+                "assetsNote",
+                "only the first $MAX_FLUTTER_ASSETS of $assetTotal flutter_assets entries are " +
+                    "listed; use list/search on the workspace for the full tree"
+            )
+        }
+        return result
     }
 
     // ---------------------------------------------------------------- extraction
@@ -270,10 +291,14 @@ internal object FlutterArtifactInspector {
     private fun inspect(source: ApkSource, path: String, requestedAbi: String): JSONObject {
         val candidates = linkedMapOf<String, MutableMap<String, Any>>()
         val assets = JSONArray()
+        var assetTotal = 0
         val entries = source.list()
         for (entry in entries) {
             val name = entry.name
-            if (name.startsWith("assets/flutter_assets/")) assets.put(name)
+            if (name.startsWith("assets/flutter_assets/")) {
+                assetTotal++
+                if (assets.length() < MAX_FLUTTER_ASSETS) assets.put(name)
+            }
             if (entry.directory || !LIBRARY_ENTRY.matches(name)) continue
             val abi = name.split('/')[1]
             val item = candidates.getOrPut(abi) { linkedMapOf() }
@@ -291,7 +316,9 @@ internal object FlutterArtifactInspector {
                     .put("mode", if (selected != null) "aot" else "unknown")
                     .put("requestedAbi", requestedAbi)
                     .put("supportedAbis", JSONArray(candidates.keys))
+                    .put("assetCount", assetTotal)
                     .put("assets", assets)
+                    .put("assetsTruncated", assetTotal > assets.length())
                     .put("candidates", candidatesJson(candidates))
             )
             .put("entryCount", entries.size)

@@ -2,6 +2,52 @@
 
 # 更新日志
 
+## 未发布（81 工具全量实测）
+
+以某 Flutter 应用（150 MB APK / 66 SO）为样本跑完 81 个工具后修掉 5 个真 bug。
+
+- **`read_disasm` 会让整个 MCP 进程 SIGSEGV（致命）**。调用 `read_disasm` 时只要
+  Rizin-Ghidra 伪代码路径生效，`rz_core_cmd_str("pdg")` 就会走进
+  `libcore_ghidra.so` → `rz_core_annotated_code_print+432`，在
+  `RzAnalysisAnnotatedCode` 为空指针时解引用 `0x730` 崩掉：
+  ```text
+  #00 rz_core_annotated_code_print+432   librz_core.so
+  #01 libcore_ghidra.so
+  #09 RizinNativeEngine_rzDecompile+6920 librz_native.so
+  signal 11 (SIGSEGV), fault addr 0x0000000000000730
+  ```
+  JVM 的 try/catch 抓不到 native 信号，所以**整条 MCP 服务直接消失**
+  （`ECONNREFUSED 127.0.0.1:8000`），必须重启 App 才能继续用。修法是在
+  `rizin_core.cpp` 里装一层 `SA_SIGINFO` 处理器 + `sigsetjmp/siglongjmp`
+  把 `pdg`/`pdd` 包起来：捕获到的 `SIGSEGV`/`SIGBUS`/`SIGILL`/`SIGFPE`
+  只终止本次反编译并回 `DECOMPILER_CRASHED`，进程继续活着。守卫只接管
+  「正在跑反编译」期间的同线程信号，其他崩溃仍交给平台 tombstone。
+  崩溃后的 `rz_core_free()` 也可能踩到半释放的树，所以清理也走同一层守卫
+  （宁可漏一个 core，也不要再崩一次）。
+- **`edit_symbol` 只认 `op`，与其余 80 个工具的 `action` 不一致（中）**。
+  schema 里 `op` 是唯一开关，照目录惯例传 `action=add` 会静默落进
+  `edits[]` 分支并报 `edits[] is required`。现在 `action` 作为 `op` 的别名
+  被接受；两者都没给时，报错改为点名「要么给 `op`，要么给 `edits[]`」，
+  不再只说缺 `edits`。
+- **`edit_symbol(op=rename)` 找不到明明存在的符号（中）**。定位器常带 Rizin
+  展示前缀（`sym.`、`so_symbol:`）或 `@0x...` 后缀，而 `.dynstr/.strtab` 里
+  存的是裸名字，于是 `analyze_functions` 能解析的 locator 到这里报
+  `SYMBOL_NOT_FOUND`。现在先试字面量、再试 `LocatorParser.normalizeSymbol()`
+  的规范化拼写，两轮都失败才报错，且报错里列出**搜过哪些拼写**并说明
+  「rename 只能改原文存在的名字，导入符号与合成的 `fcn.0x...` 没有字节可改」。
+- **`edit_fix_sections` 同时说「没改」和给出 256 条差异（中）**。
+  LIEF 重建会重排 header 表，即使结构没变字节也会变，于是 `changed:false`
+  旁边挂着 `diffRanges`（`diffBytes: 17157`），调用方无法判断到底是
+  「无事可做」还是「跳过了真正的重写」。现在拆成两层：`changed` 只描述
+  **实际写入了什么**，`verdict: already_structured` 说明结论，而 LIEF 若强行
+  重建会产出的字节全部收进嵌套的 `candidate`（含 `applied:false` 与说明）。
+  真正重建成功时回 `verdict: rebuilt`。
+- **`apk_analyze` 返回 168 KB，其中 159 KB 是 Flutter 资源清单（中）**。
+  `flutter.assets` 会把 `assets/flutter_assets/**` 全量列出（实测一个 150 MB
+  应用有上千条），占整份响应的 **94.6%**，而调用方问的是 APK 结构。现在
+  最多列 50 条，另给 `assetCount`（真实总数）、`assetsTruncated` 与
+  `assetsNote`；`flutter_blutter` 走的那条 `inspect()` 路径同样处理。
+
 ## 2.0.0
 
 **版本号从 `1.0.33` 跳到 `2.0.0`**（`versionCode` 34 → 35，不降版本号，保证已装

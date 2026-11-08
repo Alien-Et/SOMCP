@@ -554,17 +554,51 @@ internal fun EngineRuntime.editSymbol(workspaceId: String, editSessionId: String
                             "Rename to longer symbol is not supported in native Android build"
                         )
                     }
-                    val oldBytes = name.toByteArray()
-                    val newBytes = newName.toByteArray()
-                    val pos = indexOf(nextData, oldBytes)
-                    if (pos <
-                        0
-                    ) {
+                    // A locator may carry a Rizin display prefix (`sym.`,
+                    // `so_symbol:`) or a `@0x...` address suffix that never
+                    // appears in .dynstr/.strtab, so the first spelling is not
+                    // always the stored one. Try the literal target first, then
+                    // the normalized spelling, and only then report absence.
+                    // Rename rewrites the raw name bytes in place: symbols
+                    // stored verbatim can be renamed, imported/undefined names
+                    // and synthesized `fcn.0x...` labels cannot.
+                    val candidates = LinkedHashSet<String>()
+                    if (name.isNotBlank()) candidates += name
+                    val normalized = LocatorParser.normalizeSymbol(locator)
+                    if (normalized.isNotBlank()) candidates += normalized
+                    var resolvedName = name
+                    var pos = -1
+                    for (candidate in candidates) {
+                        val at = indexOf(nextData, candidate.toByteArray())
+                        if (at >= 0) {
+                            resolvedName = candidate
+                            pos = at
+                            break
+                        }
+                    }
+                    if (pos < 0) {
                         return@withSession err(
                             "SYMBOL_NOT_FOUND",
-                            "Symbol string not found in SO bytes"
+                            "Symbol \"$name\" does not appear as a literal in this SO's " +
+                                "string tables (.dynstr/.strtab); searched " +
+                                candidates.joinToString(", ") { "\"$it\"" } +
+                                ". Rename patches the raw name bytes, so only symbols " +
+                                "stored verbatim can be renamed — imported/undefined names " +
+                                "and synthesized `fcn.0x...` labels have no bytes to rewrite.",
+                            "locator",
+                            locator,
+                            "searched",
+                            candidates.joinToString(", ")
                         )
                     }
+                    if (resolvedName.length < newName.length) {
+                        return@withSession err(
+                            "SYMTAB_OVERFLOW",
+                            "Rename to longer symbol is not supported in native Android build"
+                        )
+                    }
+                    val oldBytes = resolvedName.toByteArray()
+                    val newBytes = newName.toByteArray()
                     val replacement = ByteArray(oldBytes.size) {
                         if (it <
                             newBytes.size
@@ -579,7 +613,7 @@ internal fun EngineRuntime.editSymbol(workspaceId: String, editSessionId: String
                         .put("fileOffset", hex(pos.toLong()))
                         .put("oldHex", PatchByteUtils.hexBytes(oldBytes))
                         .put("newHex", PatchByteUtils.hexBytes(replacement))
-                        .put("asm", "rename $name -> $newName")
+                        .put("asm", "rename $resolvedName -> $newName")
                         .put("length", oldBytes.size)
                     if (dryRun) {
                         previews.put(preview)
@@ -593,7 +627,7 @@ internal fun EngineRuntime.editSymbol(workspaceId: String, editSessionId: String
                             pos,
                             PatchByteUtils.hexBytes(oldBytes),
                             PatchByteUtils.hexBytes(replacement),
-                            "rename $name -> $newName"
+                            "rename $resolvedName -> $newName"
                         )
                     for (j in oldBytes.indices) {
                         nextData[pos + j] =

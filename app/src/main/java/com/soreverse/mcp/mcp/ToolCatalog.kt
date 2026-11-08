@@ -842,11 +842,16 @@ object ToolCatalog {
                         "add",
                         "remove"
                     )
+                    "action" str
+                        "Alias of `op`. Every other tool in this catalog uses `action`, so it is accepted here too."
                 }
             )
         }
     ) { e, a, _ ->
-        val op = a.str("op")
+        // `op` is the historical name and `action` is what the other 80 tools
+        // use. Accept both so a caller who follows the catalog-wide convention
+        // does not silently fall into the edits[] branch.
+        val op = a.str("op").ifBlank { a.str("action") }
         if (op.isNotEmpty()) {
             when (op) {
                 "add" -> HexCodec.long(a.str("addr"))?.let {
@@ -897,15 +902,21 @@ object ToolCatalog {
                 )
             }
         } else {
+            // Neither `op`/`action` nor `edits[]` was supplied. Say exactly
+            // what is missing instead of only naming edits[]: the usual cause
+            // is a caller passing `action=add` (correct) or nothing at all.
+            val edits = a.optJSONArray("edits")
+                ?: return@EngineToolHandler err(
+                    "INVALID_ARGUMENT",
+                    "Provide either `op` (rename|add|remove) with its shortcut arguments, " +
+                        "or `edits[]`. Nothing was supplied for this call.",
+                    "op"
+                )
             e.editSymbol(
                 a.str("workspaceId"),
                 a.str("editSessionId"),
                 a.str("locator"),
-                a.optJSONArray("edits") ?: return@EngineToolHandler err(
-                    "INVALID_ARGUMENT",
-                    "edits[] is required for this mode (see the tool schema)",
-                    "edits"
-                ),
+                edits,
                 a.bool("dryRun")
             )
         }
