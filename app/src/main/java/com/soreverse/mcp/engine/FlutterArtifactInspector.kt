@@ -59,17 +59,19 @@ internal object FlutterArtifactInspector {
     }
 
     /**
+     * Flutter assets are listed only up to this many entries. A real app ships
+     * thousands of files under `assets/flutter_assets/`, and listing every one of
+     * them made `apk_analyze` return ~159 KB of asset paths out of a ~168 KB
+     * payload — the caller asked about the APK, not the asset tree. The count
+     * and a sample stay in the reply so detection is still visible.
+     */
+    private const val MAX_FLUTTER_ASSETS = 50
+
+    /**
      * 【修复】给流式 root 解析路径用：调用方已经有一份条目清单（来自
      * ZipInputStream，拿不到 ZipFile 的随机访问），这里直接基于清单做
      * Flutter 判定，避免为了一个 `detected` 布尔值再开一次 root 流。
      */
-    /** Flutter assets are listed only up to this many entries. A real app
-     *  ships thousands of `assets/flutter_assets/**` files, and listing every
-     *  one of them made `apk_analyze` return ~159 KB of asset paths out of a
-     *  ~168 KB payload — the caller asked about the APK, not the asset tree.
-     *  The count and a sample stay in the reply so detection is still visible. */
-    private const val MAX_FLUTTER_ASSETS = 50
-
     fun inspectFlutterFromEntries(entries: JSONArray, path: String): JSONObject {
         val candidates = linkedMapOf<String, MutableMap<String, Any>>()
         val assets = JSONArray()

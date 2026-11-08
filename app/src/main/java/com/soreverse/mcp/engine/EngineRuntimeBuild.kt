@@ -258,19 +258,21 @@ internal fun EngineRuntime.fixSections(workspaceId: String, editSessionId: Strin
                 )
                 .put("sha256Before", beforeHash)
                 .put("sha256After", beforeHash)
-                .put("candidate", JSONObject()
-                    .put("applied", false)
-                    .put("sha256After", afterHash)
-                    .put("diffRangeCount", diffRanges.length())
-                    .put("diffBytes", diff.diffBytes)
-                    .put("diffTruncated", diff.truncated)
-                    .put(
-                        "note",
-                        "These bytes are what LIEF would emit if the rewrite were forced. " +
-                            "They are NOT applied to this workspace; the header tables already " +
-                            "parse, so only formatting/canonicalization differs."
-                    )
-                    .put("diffRanges", diffRanges)
+                .put(
+                    "candidate",
+                    JSONObject()
+                        .put("applied", false)
+                        .put("sha256After", afterHash)
+                        .put("diffRangeCount", diffRanges.length())
+                        .put("diffBytes", diff.diffBytes)
+                        .put("diffTruncated", diff.truncated)
+                        .put(
+                            "note",
+                            "These bytes are what LIEF would emit if the rewrite were forced. " +
+                                "They are NOT applied to this workspace; the header tables " +
+                                "already parse, so only formatting/canonicalization differs."
+                        )
+                        .put("diffRanges", diffRanges)
                 )
                 .put("beforeSections", elfBefore.sections.size)
                 .put("afterSections", elfAfter.sections.size)

@@ -800,8 +800,12 @@ internal fun EngineRuntime.rzDecompile(workspaceId: String, editSessionId: Strin
     // rizin-ghidra decompiler dereferenced garbage (null RzAnalysisAnnotatedCode).
     // The process survives because the fault is contained in rizin_core.cpp, so
     // this is an ordinary tool error and not a transport failure.
-    if ((decompErr == "DECOMPILER_UNAVAILABLE" || decompErr == "DECOMPILER_FAILED" ||
-            decompErr == "DECOMPILER_CRASHED") && strict
+    if ((
+            decompErr == "DECOMPILER_UNAVAILABLE" ||
+                decompErr == "DECOMPILER_FAILED" ||
+                decompErr == "DECOMPILER_CRASHED"
+            ) &&
+        strict
     ) {
         return@guarded err(
             decompErr,

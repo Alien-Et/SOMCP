@@ -587,8 +587,7 @@ internal fun EngineRuntime.editSymbol(workspaceId: String, editSessionId: String
                                 "and synthesized `fcn.0x...` labels have no bytes to rewrite.",
                             "locator",
                             locator,
-                            "searched",
-                            candidates.joinToString(", ")
+                            "searched" to candidates.joinToString(", ")
                         )
                     }
                     if (resolvedName.length < newName.length) {
