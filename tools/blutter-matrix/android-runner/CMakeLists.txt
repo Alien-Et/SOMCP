@@ -50,12 +50,24 @@ target_compile_definitions(${RUNNER_LIBRARY} PRIVATE
     BLUTTER_COMMIT="${BLUTTER_COMMIT}"
     FRIDA_TEMPLATE_DIR="${BLUTTER_SOURCE}/../scripts/"
 )
-if(NO_METHOD_EXTRACTOR_STUB)
-    target_compile_definitions(${RUNNER_LIBRARY} PRIVATE NO_METHOD_EXTRACTOR_STUB)
-endif()
-if(UNIFORM_INTEGER_ACCESS)
-    target_compile_definitions(${RUNNER_LIBRARY} PRIVATE UNIFORM_INTEGER_ACCESS)
-endif()
+# Dart VM compatibility macros detected by build_runner.py from the installed
+# dartvm headers (mirrors upstream blutter.py::find_compat_macro()).  Each one is
+# forwarded as -D<name> only when the caller passed -D<name>=ON.
+foreach(_blutter_compat_macro IN ITEMS
+    OLD_MAP_SET_NAME
+    OLD_MAP_NO_IMMUTABLE
+    NO_LAST_INTERNAL_ONLY_CID
+    HAS_TYPE_REF
+    HAS_RECORD_TYPE
+    HAS_SHARED_CLASS_TABLE
+    NO_INIT_LATE_STATIC_FIELD
+    NO_METHOD_EXTRACTOR_STUB
+    UNIFORM_INTEGER_ACCESS
+)
+    if(${_blutter_compat_macro})
+        target_compile_definitions(${RUNNER_LIBRARY} PRIVATE ${_blutter_compat_macro})
+    endif()
+endforeach()
 if(NOT COMPRESSED_POINTERS)
     target_compile_definitions(${RUNNER_LIBRARY} PRIVATE NO_CODE_ANALYSIS CSREG_DART_HEAP=ARM64_REG_XZR)
 endif()

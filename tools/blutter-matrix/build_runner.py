@@ -61,7 +61,55 @@ def write_status(path, status, reason=None, **fields):
     temporary.replace(path)
 
 
+IMPORTLIB_SHIM = """import importlib.util
+import importlib.machinery
+
+def load_source(modname, filename):
+    loader = importlib.machinery.SourceFileLoader(modname, filename)
+    spec = importlib.util.spec_from_file_location(modname, filename, loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+"""
+
+
+def patch_legacy_dart_tooling(dart):
+    # Dart SDKs from the 2.x / early 3.x era still `import imp` in
+    # tools/utils.py. Python 3.12 removed that stdlib module
+    # (https://docs.python.org/3.12/whatsnew/3.12.html#imp), so
+    # make_version.py / dartvm_create_srclist.py die with
+    # `ModuleNotFoundError: No module named 'imp'` before cmake ever runs.
+    #
+    # This mirrors upstream blutter's dartvm_fetch_build.py fix and is a no-op
+    # on SDK revisions that never used imp. It also silences the invalid
+    # escape-sequence SyntaxWarnings that newer Python turns into hard errors.
+    utils_path = dart / "tools" / "utils.py"
+    if not utils_path.is_file():
+        return
+    content = utils_path.read_text(encoding="utf-8")
+    if "import imp\n" not in content:
+        return
+    content = content.replace(" ' awk ", " r' awk ")
+    content = content.replace("match_against('", "match_against(r'")
+    content = content.replace("re.search('", "re.search(r'")
+    content = content.replace("import imp\n", IMPORTLIB_SHIM)
+    content = content.replace("imp.load_source", "load_source")
+    utils_path.write_text(content, encoding="utf-8")
+
+
+def make_version_flags(dart):
+    # Dart switched make_version.py's argparse options from underscore spellings
+    # (--no_git_hash / --no_sdk_hash, pre-3.0 era) to hyphenated ones
+    # (--no-git-hash / --no-sdk-hash). Probe the source instead of guessing a
+    # version cutoff so every pinned SDK revision keeps working.
+    script = (dart / "tools" / "make_version.py").read_text(encoding="utf-8")
+    if "--no_git_hash" in script:
+        return ["--no_git_hash", "--no_sdk_hash"]
+    return ["--no-git-hash", "--no-sdk-hash"]
+
+
 def prepare_dart_project(dart, blutter, runner, log):
+    patch_legacy_dart_tooling(dart)
     tidy = dart / "runtime" / "tools" / "run_clang_tidy.dart"
     content = tidy.read_text(encoding="utf-8")
     marker = content.find("-std=c++")
@@ -74,21 +122,70 @@ def prepare_dart_project(dart, blutter, runner, log):
     (dart / "Config.cmake.in").write_text('@PACKAGE_INIT@\n\ninclude ( "${CMAKE_CURRENT_LIST_DIR}/dartvmTarget.cmake" )\n', encoding="utf-8")
     run([sys.executable, str(blutter / "scripts" / "dartvm_create_srclist.py"), str(dart)], blutter, log)
     version_output = dart / "runtime" / "vm" / "version.cc"
-    run([sys.executable, str(dart / "tools" / "make_version.py"), "--input", str(dart / "runtime" / "vm" / "version_in.cc"), "--output", str(version_output), "--no-git-hash", "--no-sdk-hash"], dart, log)
+    run([sys.executable, str(dart / "tools" / "make_version.py"), "--input", str(dart / "runtime" / "vm" / "version_in.cc"), "--output", str(version_output), *make_version_flags(dart)], dart, log)
     source_list = dart / "sourcelist.cmake"
     source_text = source_list.read_text(encoding="utf-8")
     if "runtime/vm/version.cc" not in source_text:
         source_list.write_text(source_text.replace("set(SRCS", "set(SRCS\n    ./runtime/vm/version.cc", 1), encoding="utf-8")
 
 
-def dart_compatibility_definitions(dart):
-    object_store = (dart / "runtime" / "vm" / "object_store.h").read_text(encoding="utf-8")
-    object_header = (dart / "runtime" / "vm" / "object.h").read_text(encoding="utf-8")
+def dart_compatibility_definitions(dart_version, packages, package):
+    # Mirrors blutter.py's find_compat_macro(). Every macro below gates an
+    # #ifdef in blutter/src, so a macro that is never defined does not fail
+    # loudly: it silently selects the branch written for a different Dart
+    # generation. A 2.19.6 runner that was missing HAS_TYPE_REF compiled the
+    # Dart 3.5+ accessor `untag()->owner()` and died with
+    # "no member named 'owner' in 'dart::UntaggedTypeParameter'".
+    # Probe the pinned headers instead of hard-coding a version table.
+    include = packages / "include" / f"dartvm{package}" / "vm"
+
+    def read(name):
+        path = include / name
+        return path.read_bytes() if path.is_file() else None
+
     definitions = []
-    if "build_generic_method_extractor_code)" not in object_store:
-        definitions.append("NO_METHOD_EXTRACTOR_STUB")
-    if "AsTruncatedInt64Value()" not in object_header:
-        definitions.append("UNIFORM_INTEGER_ACCESS")
+    class_id = read("class_id.h")
+    if class_id is not None:
+        # Rename the default implementation classes of Map and Set
+        # https://github.com/dart-lang/sdk/commit/a2de36e708b8a8e15d3bd49eef2cede57e649436
+        if b"V(LinkedHashMap)" in class_id:
+            definitions.append("OLD_MAP_SET_NAME")
+            # Add immutable maps and sets
+            # https://github.com/dart-lang/sdk/commit/e8e9e1d15216788d4112e40f4408c52455d11113
+            if b"V(ImmutableLinkedHashMap)" not in class_id:
+                definitions.append("OLD_MAP_NO_IMMUTABLE")
+        if b" kLastInternalOnlyCid " not in class_id:
+            definitions.append("NO_LAST_INTERNAL_ONLY_CID")
+        # Remove TypeRef
+        # https://github.com/dart-lang/sdk/commit/2ee6fcf5148c34906c04c2ac518077c23891cd1b
+        if b"V(TypeRef)" in class_id:
+            definitions.append("HAS_TYPE_REF")
+        # RecordType landed in Dart 3.0 and was still incomplete in the 2.19 tree.
+        if dart_version.startswith("3.") and b"V(RecordType)" in class_id:
+            definitions.append("HAS_RECORD_TYPE")
+    class_table = read("class_table.h")
+    if class_table is not None:
+        # Merge ClassTable and SharedClassTable back together
+        # https://github.com/dart-lang/sdk/commit/4a4eedd860a8af2b1cb27e68d9feae5550d0f511
+        if b"class SharedClassTable {" in class_table:
+            definitions.append("HAS_SHARED_CLASS_TABLE")
+    stub_code_list = read("stub_code_list.h")
+    if stub_code_list is not None:
+        # Add InitLateStaticField and InitLateFinalStaticField stub
+        # https://github.com/dart-lang/sdk/commit/37d45743e11970f0eacc0ec864e97891347185f5
+        if b"V(InitLateStaticField)" not in stub_code_list:
+            definitions.append("NO_INIT_LATE_STATIC_FIELD")
+    object_store = read("object_store.h")
+    if object_store is not None:
+        # [vm] Simplify and optimize method extractors
+        if b"build_generic_method_extractor_code)" not in object_store:
+            definitions.append("NO_METHOD_EXTRACTOR_STUB")
+    object_header = read("object.h")
+    if object_header is not None:
+        # [vm] Refactor access to Integer value
+        # https://github.com/dart-lang/sdk/commit/84fd647969f0d74ab63f0994d95b5fc26cac006a
+        if b"AsTruncatedInt64Value()" not in object_header:
+            definitions.append("UNIFORM_INTEGER_ACCESS")
     return definitions
 
 
@@ -168,7 +265,7 @@ def main():
             package = package_version(runner["dartVersion"])
             dart_package = packages / "lib" / "cmake" / f"dartvm{package}_android_arm64"
             dart_package_name = f"dartvm{package}_android_arm64"
-            compatibility = [f"-D{item}=ON" for item in dart_compatibility_definitions(dart)]
+            compatibility = [f"-D{item}=ON" for item in dart_compatibility_definitions(runner["dartVersion"], packages, package)]
             run([args.cmake, "-S", str(overlay), "-B", str(runner_build), "-G", "Ninja", f"-DBLUTTER_SOURCE={blutter / 'blutter'}", f"-DDARTLIB={dart_package_name}", f"-D{dart_package_name}_DIR={dart_package}", f"-DCMAKE_PREFIX_PATH={packages}", f"-DCAPSTONE_ROOT={args.capstone_root}", f"-DRUNNER_LIBRARY={runner['libraryName']}", f"-DRUNNER_ID={runner['runnerId']}", f"-DBLUTTER_COMMIT={runner['blutterCommit']}", f"-DCOMPRESSED_POINTERS={int(runner['compressedPointers'])}", f"-DCMAKE_TOOLCHAIN_FILE={toolchain}", "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-26", "-DCMAKE_BUILD_TYPE=Release", *compatibility], overlay, log)
             run([args.cmake, "--build", str(runner_build), "--parallel"], overlay, log)
             candidates = list(runner_build.rglob(f"lib{runner['libraryName']}.so"))
