@@ -72,12 +72,29 @@ BUILD="$INSTALL/../capstone-build"
 rm -rf "$BUILD" "$INSTALL"
 mkdir -p "$INSTALL"
 
+# capstone 4.0.2's CMakeLists.txt opens with `cmake_minimum_required(VERSION 2.6)`.
+# CMake 4.x removed compatibility with anything below 3.5 and refuses to
+# configure: "Compatibility with CMake < 3.5 has been removed from CMake."
+# CI runners ship CMake 4.x, so without this the capstone build dies before
+# anything is compiled. Patch the submodule in place (idempotent, main repo
+# untouched) and pass the escape hatch as well -- mirrors the same guard in
+# build-unidbg-native.sh, which already had it.
+CMAKE_LISTS="$SRC/CMakeLists.txt"
+if [[ -f "$CMAKE_LISTS" ]] && grep -qE 'cmake_minimum_required *\(VERSION [0-2]\.' "$CMAKE_LISTS"; then
+  sed -i -E \
+    -e 's/cmake_policy *\(SET CMP0048 OLD\)/cmake_policy(SET CMP0048 NEW)/g' \
+    -e 's/cmake_minimum_required *\(VERSION 2\.[0-9]+\)/cmake_minimum_required(VERSION 3.5)/g' \
+    "$CMAKE_LISTS"
+  echo "[capstone] patched $CMAKE_LISTS for CMake 4.x (min version raised to 3.5)"
+fi
+
 echo "[capstone] configuring (Android arm64-v8a, static) ..."
 "$CMAKE_BIN" -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-26 \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCAPSTONE_BUILD_STATIC=ON \
   -DCAPSTONE_BUILD_SHARED=OFF \
   -DCAPSTONE_BUILD_TESTS=OFF \

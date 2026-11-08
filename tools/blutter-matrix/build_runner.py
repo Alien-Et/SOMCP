@@ -260,13 +260,21 @@ def main():
             icu_root = pathlib.Path(args.icu_root).resolve()
             icu_include = icu_root / "include"
             icu_lib = icu_root / "lib"
-            run([args.cmake, "-S", str(dart), "-B", str(dart_build), "-G", "Ninja", f"-DCMAKE_TOOLCHAIN_FILE={toolchain}", "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-26", "-DTARGET_OS=android", "-DTARGET_ARCH=arm64", f"-DCOMPRESSED_PTRS={int(runner['compressedPointers'])}", f"-DICU_ROOT={icu_root}", f"-DCMAKE_PREFIX_PATH={icu_root}", f"-DICU_INCLUDE_DIR={icu_include}", f"-DICU_INCLUDE_DIRS={icu_include}", f"-DICU_LIBRARY={icu_lib / 'libicuuc.a'}", f"-DICU_LIBRARIES={icu_lib / 'libicuuc.a'}", f"-DICU_UC_LIBRARY={icu_lib / 'libicuuc.a'}", f"-DICU_UC_LIBRARY_RELEASE={icu_lib / 'libicuuc.a'}", f"-DICU_DATA_LIBRARY={icu_lib / 'libicudata.a'}", f"-DICU_DATA_LIBRARY_RELEASE={icu_lib / 'libicudata.a'}", f"-DCMAKE_CXX_FLAGS=-include {atomic_ref_shim}", f"-DCMAKE_INSTALL_PREFIX={packages}", "-DCMAKE_BUILD_TYPE=Release"], dart, log)
+            # Dart SDKs across the pinned range carry CMakeLists that ask for
+            # cmake_minimum_required values older than 3.5 (the 2.19 tree asks
+            # for 3.0), and CMake 4.x -- which the CI runners ship -- refuses to
+            # configure those at all: "Compatibility with CMake < 3.5 has been
+            # removed". The escape hatch keeps the old policy behaviour without
+            # editing the SDK; it is ignored on CMake versions that predate it.
+            # Mirrors build_capstone_android.sh / build-unidbg-native.sh.
+            cmake_policy_min = "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+            run([args.cmake, "-S", str(dart), "-B", str(dart_build), "-G", "Ninja", f"-DCMAKE_TOOLCHAIN_FILE={toolchain}", "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-26", "-DTARGET_OS=android", "-DTARGET_ARCH=arm64", f"-DCOMPRESSED_PTRS={int(runner['compressedPointers'])}", f"-DICU_ROOT={icu_root}", f"-DCMAKE_PREFIX_PATH={icu_root}", f"-DICU_INCLUDE_DIR={icu_include}", f"-DICU_INCLUDE_DIRS={icu_include}", f"-DICU_LIBRARY={icu_lib / 'libicuuc.a'}", f"-DICU_LIBRARIES={icu_lib / 'libicuuc.a'}", f"-DICU_UC_LIBRARY={icu_lib / 'libicuuc.a'}", f"-DICU_UC_LIBRARY_RELEASE={icu_lib / 'libicuuc.a'}", f"-DICU_DATA_LIBRARY={icu_lib / 'libicudata.a'}", f"-DICU_DATA_LIBRARY_RELEASE={icu_lib / 'libicudata.a'}", f"-DCMAKE_CXX_FLAGS=-include {atomic_ref_shim}", f"-DCMAKE_INSTALL_PREFIX={packages}", "-DCMAKE_BUILD_TYPE=Release", cmake_policy_min], dart, log)
             run([args.cmake, "--build", str(dart_build), "--target", "install", "--parallel"], dart, log)
             package = package_version(runner["dartVersion"])
             dart_package = packages / "lib" / "cmake" / f"dartvm{package}_android_arm64"
             dart_package_name = f"dartvm{package}_android_arm64"
             compatibility = [f"-D{item}=ON" for item in dart_compatibility_definitions(runner["dartVersion"], packages, package)]
-            run([args.cmake, "-S", str(overlay), "-B", str(runner_build), "-G", "Ninja", f"-DBLUTTER_SOURCE={blutter / 'blutter'}", f"-DDARTLIB={dart_package_name}", f"-D{dart_package_name}_DIR={dart_package}", f"-DCMAKE_PREFIX_PATH={packages}", f"-DCAPSTONE_ROOT={args.capstone_root}", f"-DRUNNER_LIBRARY={runner['libraryName']}", f"-DRUNNER_ID={runner['runnerId']}", f"-DBLUTTER_COMMIT={runner['blutterCommit']}", f"-DCOMPRESSED_POINTERS={int(runner['compressedPointers'])}", f"-DCMAKE_TOOLCHAIN_FILE={toolchain}", "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-26", "-DCMAKE_BUILD_TYPE=Release", *compatibility], overlay, log)
+            run([args.cmake, "-S", str(overlay), "-B", str(runner_build), "-G", "Ninja", f"-DBLUTTER_SOURCE={blutter / 'blutter'}", f"-DDARTLIB={dart_package_name}", f"-D{dart_package_name}_DIR={dart_package}", f"-DCMAKE_PREFIX_PATH={packages}", f"-DCAPSTONE_ROOT={args.capstone_root}", f"-DRUNNER_LIBRARY={runner['libraryName']}", f"-DRUNNER_ID={runner['runnerId']}", f"-DBLUTTER_COMMIT={runner['blutterCommit']}", f"-DCOMPRESSED_POINTERS={int(runner['compressedPointers'])}", f"-DCMAKE_TOOLCHAIN_FILE={toolchain}", "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-26", "-DCMAKE_BUILD_TYPE=Release", cmake_policy_min, *compatibility], overlay, log)
             run([args.cmake, "--build", str(runner_build), "--parallel"], overlay, log)
             candidates = list(runner_build.rglob(f"lib{runner['libraryName']}.so"))
             if len(candidates) != 1:
