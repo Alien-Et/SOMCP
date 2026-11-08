@@ -4,14 +4,19 @@ on:
   push:
     tags:
       - 'v*'
-  # 【魔改】fork 取消前 tag push 不触发 workflow；加手动触发兜底，
-  # 用 tag 输入指定发布版本（不传则退回 github.ref_name，兼容 tag push）。
+  # 【魔改】fork 取消前 tag push 不触发 workflow；加手动触发兜底。
+  #
+  # 发布标签的唯一来源是「本次运行所 checkout 的 ref」。tag push 时它就是那个
+  # tag；手动触发时从已有 tag 里挑一个（ref 下拉框），没有任何自由输入版本号
+  # 的入口 —— 早期版本允许手填 tag、留空则退回 github.ref_name，于是手动触发
+  # 会把分支名 `main` 当成标签发布出去（实测产生过 releases/tag/main）。
+  # 标签一律由本地 `git tag` + `git push` 决定，工作流只负责构建与发布。
   workflow_dispatch:
     inputs:
-      tag:
-        description: '发布版本号（如 v1.0.0）；留空则使用当前分支名'
-        required: false
-        default: ''
+      confirm:
+        description: '确认：从下方选择的 tag 构建并发布（标签必须已存在）'
+        type: boolean
+        default: false
 
 # ---------------------------------------------------------------------------
 # Toolchain versions live here and nowhere else in this file.
@@ -38,6 +43,15 @@ env:
   # `cmake_minimum_required(VERSION <3.5)` and `cmake_policy(SET CMPxxxx OLD)`
   # into hard errors, and the pinned third_party trees still declare both.
   SOMCP_CMAKE: "cmake;3.22.1"
+  # Gradle 发行包的字节来源。services.gradle.org 会 307 跳到 GitHub release
+  # 资产 CDN,而那个 CDN 会整段 504(实测 run 42469477147);镜像上的字节与
+  # 官方哈希一致,完整性由下面的 sha256 保证,所以镜像只是更快、更少抖动的
+  # 来源,不是信任上的放宽。downloader 里仍保留官方地址作最后兜底。
+  SOMCP_GRADLE_DIST_MIRROR: "https://mirrors.cloud.tencent.com/gradle"
+  # 官方 gradle-9.6.1-bin.zip 的 sha256,取自
+  # https://services.gradle.org/distributions/gradle-9.6.1-bin.zip.sha256。
+  # 换 Gradle 版本时这一行必须跟着换,否则 seed 会在校验处直接失败。
+  SOMCP_GRADLE_DIST_SHA256: "9c0f7faeeb306cb14e4279a3e084ca6b596894089a0638e68a07c945a32c9e14"
 
 # Concurrent tag pushes to the same tag would build the same release twice;
 # serialize by tag so we never build the same release more than once.
@@ -64,6 +78,42 @@ jobs:
           # `upload-pack: not our ref`. See the note at the top of .gitmodules.
           submodules: false
           fetch-depth: 0
+      - name: Resolve and validate release tag
+        # Single source of truth for the tag used by the three later steps
+        # (notes, APK naming, upload). Both triggers land here:
+        #   tag push          -> github.ref_name is the tag (vX.Y.Z)
+        #   workflow_dispatch -> the user picked an existing tag in the "Use
+        #                        workflow from" ref dropdown
+        # A branch name (main, master, ...) is rejected outright: that is how a
+        # manual run once published releases/tag/main with a full APK set.
+        id: release
+        run: |
+          set -euo pipefail
+          REF_NAME="${GITHUB_REF_NAME:?GITHUB_REF_NAME is empty}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.confirm }}" != "true" ]; then
+              echo "::error::workflow_dispatch requires confirm=true; select the release tag in the ref dropdown and tick the box."
+              exit 1
+            fi
+          fi
+          # Must look like a version tag, and must actually exist as a tag.
+          if ! printf '%s' "$REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$REF_NAME' is not a release tag (expected vX.Y.Z). Push the tag from your workstation first: git tag $REF_NAME && git push origin $REF_NAME"
+            exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$REF_NAME" >/dev/null; then
+            echo "::error::tag '$REF_NAME' does not exist in this repository."
+            exit 1
+          fi
+          TAG_COMMIT="$(git rev-parse "refs/tags/$REF_NAME^{commit}")"
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+            echo "::error::tag '$REF_NAME' points at $TAG_COMMIT but this run is building $HEAD_COMMIT. Re-run from the tag ref."
+            exit 1
+          fi
+          echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $REF_NAME (commit $TAG_COMMIT)"
+
       - name: Init submodules
         # 非递归 checkout 之后补上 third_party/*；嵌套的 rizinorg/ghidra pin 可能是
         # 已被上游清洗的死提交，按分支名取 + 本地校验能把这类失败落在有名字的检核点上
@@ -73,16 +123,20 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ env.SOMCP_JAVA_VERSION }}
-      # services.gradle.org intermittently answers 504; the action retries twice
-      # (~35s) and then fails the job. Retry the step so a transient upstream
-      # outage cannot discard the whole release pipeline.
-      - uses: gradle/actions/setup-gradle@v4
-        id: setup-gradle
-        continue-on-error: true
-        with:
-          gradle-version: ${{ env.SOMCP_GRADLE_VERSION }}
-      - name: Retry Gradle provisioning on transient failure
-        if: steps.setup-gradle.outcome == 'failure'
+      # The repo ships gradle/wrapper/gradle-wrapper.properties but no gradlew
+      # launcher, so the distribution is provisioned by an action -- and that
+      # action downloads from services.gradle.org, which 307-redirects to the
+      # GitHub release asset CDN. That CDN can answer 504 for a whole outage
+      # window, and setup-gradle gives up after two retries (~35s), failing the
+      # job before any step of ours runs (run 42469477147 died there). So place
+      # the distribution ourselves first: tools/seed-gradle.sh fetches it from
+      # SOMCP_GRADLE_DIST_MIRROR, verifies it against the pinned official
+      # SOMCP_GRADLE_DIST_SHA256, and unpacks it into setup-gradle's own
+      # installation directory; the action then finds that version on PATH and
+      # reports "already available on PATH. Not installing." -- no network.
+      - name: Seed Gradle distribution from mirror (sha256-verified)
+        run: bash tools/seed-gradle.sh "$SOMCP_GRADLE_VERSION" "$SOMCP_GRADLE_DIST_MIRROR" "$SOMCP_GRADLE_DIST_SHA256"
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: ${{ env.SOMCP_GRADLE_VERSION }}
@@ -831,13 +885,31 @@ jobs:
           LLM_MODEL: ${{ secrets.LLM }}
           LLM_KEY: ${{ secrets.KEY }}
           LLM_API: ${{ secrets.API }}
-          # Works for both triggers: on a tag push github.ref_name is the
-          # tag (vX.Y.Z); on a published release it is also the tag name.
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          # Single source of truth: the tag validated by the "Resolve and
+          # validate release tag" step. Never github.ref_name — a manual run
+          # from a branch would then call the branch a version.
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          # Collect commits between the previous tag and the current release tag.
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || true)
+          # Collect commits between the previous release tag and this one.
+          # `HEAD~1` was wrong: it answers "the tag before the commit below
+          # HEAD", which is not the same thing when other commits sit on top
+          # of the release commit, and it can even return the current tag
+          # itself. `git describe --exclude` asks the right question — the
+          # nearest vX.Y.Z tag reachable from HEAD, ignoring this release — and
+          # is one command with no pipe to break under `pipefail`.
+          PREV_TAG=$(git describe --tags --abbrev=0 \
+            --match 'v[0-9]*.[0-9]*.[0-9]*' \
+            --exclude "$RELEASE_TAG" HEAD 2>/dev/null || true)
+          # describe only sees tags reachable from HEAD. A release cut from a
+          # side branch can therefore see none; fall back to the highest other
+          # version tag so the notes still name a real predecessor.
+          if [ -z "$PREV_TAG" ]; then
+            PREV_TAG=$(git tag --sort=-v:refname \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | grep -vxF "$RELEASE_TAG" \
+              | head -n1 || true)
+          fi
           if [ -n "$PREV_TAG" ]; then
             COMMITS=$(git log --oneline --no-decorate "$PREV_TAG"..HEAD)
           else
@@ -939,7 +1011,7 @@ jobs:
       - name: Rename APKs and generate SHA256SUMS
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.tag || github.ref_name }}"
+          VERSION="${{ steps.release.outputs.tag }}"
           VERSION="${VERSION#v}"
           mkdir -p release
           shopt -s nullglob
@@ -971,6 +1043,10 @@ jobs:
       - name: Upload APKs and release notes to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
+          # Validated tag, never the branch name. The tag already exists (it is
+          # what triggered the run, or what was picked in the ref dropdown), so
+          # this attaches the assets to that release instead of creating one on
+          # a made-up ref.
+          tag_name: ${{ steps.release.outputs.tag }}
           files: release/*
           body_path: release_notes.md

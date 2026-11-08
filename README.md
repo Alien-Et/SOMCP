@@ -380,6 +380,20 @@ app-universal-release.apk       # 约 131 MB
 `libjnidispatch.so`、`libcapstone.so`、`libcore_ghidra.so`、`librz_native.so` + 27 个 `librz_*.so`），
 Unidbg 模拟执行可用；本地 debug 包因 submodule 常为空，`emulate_*` 会报 `EMULATOR_UNAVAILABLE`。
 
+### 发版（标签驱动）
+
+**标签是唯一来源，工作流不造标签**。发版就三步：
+
+```bash
+git tag v1.0.34            # 按仓库已有标签序列递增
+git push origin v1.0.34    # 手动推标签，不要由脚本代劳
+```
+
+`release.yml` 被这个 tag push 触发后自动完成构建与发布，发布说明取
+「上一个版本 → 当前版本」之间的提交信息。手动兜底（fork 期间 tag push 可能
+不触发）从 ref 下拉框里挑那个已存在的 tag，并勾上 `confirm` ——
+没有任何填版本号的地方，分支名 `main` 会被第一步直接拒绝。
+
 ### 本地构建
 
 环境要求：
@@ -521,11 +535,13 @@ bash build-native-android.sh
   递归整棵 `third_party/` 源码树，三个原生脚本共用同一套规范化
 - `test-v11.yml` 补装 `cmake;3.22.1`（与 `build.yml` / `release.yml` 对齐，
   否则 Unidbg 步骤回落到 runner 的 CMake 4.4 并在 keystone 配置阶段挂掉）
-- `setup-gradle` 的 504 重试（`services.gradle.org` 偶发不可用）
+- `setup-gradle` 的 504 脆弱性：改为 `tools/seed-gradle.sh` 从镜像预置发行包
+  （官方 sha256 校验）后再调 action，删掉「只重试一次」的旧写法
 - 删除 `test.yml` + `test-v2..v10` 十个从未运行过的迭代残骸，只留 `test-v11.yml`
 - 工具链版本收敛到每个工作流顶层的 `env:` 块（`SOMCP_JAVA_VERSION` /
   `SOMCP_GRADLE_VERSION` / `SOMCP_ANDROID_PLATFORM` / `SOMCP_BUILD_TOOLS` /
-  `SOMCP_NDK` / `SOMCP_CMAKE`），`upload-artifact` 统一 `@v7`；
+  `SOMCP_NDK` / `SOMCP_CMAKE` / `SOMCP_GRADLE_DIST_MIRROR` /
+  `SOMCP_GRADLE_DIST_SHA256`），`upload-artifact` 统一 `@v7`；
   `tools/check-workflow-versions.py` 守卫跨文件一致性并接入 CI
 - CI keystore 恢复：`tr -d '[:space:]'` 去空白 + `keytool -list` 校验
 

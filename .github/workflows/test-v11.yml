@@ -36,6 +36,15 @@ env:
   # `cmake_minimum_required(VERSION <3.5)` and `cmake_policy(SET CMPxxxx OLD)`
   # into hard errors, and the pinned third_party trees still declare both.
   SOMCP_CMAKE: "cmake;3.22.1"
+  # Gradle 发行包的字节来源。services.gradle.org 会 307 跳到 GitHub release
+  # 资产 CDN,而那个 CDN 会整段 504(实测 run 42469477147);镜像上的字节与
+  # 官方哈希一致,完整性由下面的 sha256 保证,所以镜像只是更快、更少抖动的
+  # 来源,不是信任上的放宽。downloader 里仍保留官方地址作最后兜底。
+  SOMCP_GRADLE_DIST_MIRROR: "https://mirrors.cloud.tencent.com/gradle"
+  # 官方 gradle-9.6.1-bin.zip 的 sha256,取自
+  # https://services.gradle.org/distributions/gradle-9.6.1-bin.zip.sha256。
+  # 换 Gradle 版本时这一行必须跟着换,否则 seed 会在校验处直接失败。
+  SOMCP_GRADLE_DIST_SHA256: "9c0f7faeeb306cb14e4279a3e084ca6b596894089a0638e68a07c945a32c9e14"
 
 permissions:
   contents: read
@@ -67,19 +76,20 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ env.SOMCP_JAVA_VERSION }}
-      # gradle/actions/setup-gradle downloads the distribution from
-      # services.gradle.org, which occasionally answers 504 during a partial
-      # outage. The action retries twice on its own (~35s) and then fails the
-      # whole job before a single step of ours runs. Retry the step itself so a
-      # transient upstream hiccup cannot burn a full pipeline.
-      - uses: gradle/actions/setup-gradle@v4
-        id: setup-gradle
-        continue-on-error: true
-        with:
-          gradle-version: ${{ env.SOMCP_GRADLE_VERSION }}
-          cache-disabled: true
-      - name: Retry Gradle provisioning on transient failure
-        if: steps.setup-gradle.outcome == 'failure'
+      # The repo ships gradle/wrapper/gradle-wrapper.properties but no gradlew
+      # launcher, so the distribution is provisioned by an action -- and that
+      # action downloads from services.gradle.org, which 307-redirects to the
+      # GitHub release asset CDN. That CDN can answer 504 for a whole outage
+      # window, and setup-gradle gives up after two retries (~35s), failing the
+      # job before any step of ours runs (run 42469477147 died there). So place
+      # the distribution ourselves first: tools/seed-gradle.sh fetches it from
+      # SOMCP_GRADLE_DIST_MIRROR, verifies it against the pinned official
+      # SOMCP_GRADLE_DIST_SHA256, and unpacks it into setup-gradle's own
+      # installation directory; the action then finds that version on PATH and
+      # reports "already available on PATH. Not installing." -- no network.
+      - name: Seed Gradle distribution from mirror (sha256-verified)
+        run: bash tools/seed-gradle.sh "$SOMCP_GRADLE_VERSION" "$SOMCP_GRADLE_DIST_MIRROR" "$SOMCP_GRADLE_DIST_SHA256"
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: ${{ env.SOMCP_GRADLE_VERSION }}

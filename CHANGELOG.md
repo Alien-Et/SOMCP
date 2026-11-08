@@ -33,11 +33,23 @@
 - **`build-native-android.sh` 的 LIEF 配置缺 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`（低）**。
   LIEF 0.16.1 声明 3.24 所以实际能过,但与 `build-rz-ghidra-android.sh` /
   `build-unidbg-native.sh` 对齐后,将来 pin 挪到老 tag 也不会再踩同一个坑。
-- **三个工作流的 `gradle/actions/setup-gradle@v4` 会被上游 504 直接打断（中）**。
-  该 action 从 `services.gradle.org` 拉发行包,服务偶发 504,action 自身只重试
-  两次(约 35 秒)就判定失败 —— 整条流水线在第一个业务步骤之前就红了(实测
-  run 42466197798)。改成 `continue-on-error: true` + 一条重复步骤,
-  仅在前一次 `outcome == 'failure'` 时执行。
+- **Gradle 发行包会被上游 504 直接打断,「重试一次」救不了（中）**。
+  下载链是 `services.gradle.org/distributions/...` → 307 跳 GitHub release
+  资产 CDN,而该 CDN 会整段时间 504(实测 run 42469477147:本机连试三次全
+  504,同时段 `services.gradle.org/versions/all` 正常 200)。原先写的
+  `continue-on-error: true` + 一条重复 setup-gradle 步骤**不解决问题** ——
+  `GRADLE_BUILD_ACTION_SETUP_COMPLETED` 为真时第二步只打印一行提示,仍会
+  重新 Provision,打到同一个 504 上(日志里第二次又是两连 504)。
+  改为新增 `tools/seed-gradle.sh` 预置:从腾讯云镜像取包、用仓库里 pin 住的
+  **官方 sha256** 校验(镜像上的字节与官方哈希一致,完整性不依赖镜像)、解到
+  setup-gradle 自己的
+  `$RUNNER_TEMP/.gradle-actions/gradle-installations/installs/gradle-<v>`,
+  并把 `bin/` 加进 `$GITHUB_PATH`。之后 action 走
+  `Gradle version 9.6.1 is already available on PATH. Not installing.` 分支,
+  一个字节也不联网;脚本另外跑一次 `gradle --version` 做端到端版本确认。
+  脚本幂等,sha256 缺失或不匹配时直接失败而非降级放行;镜像 URL 与哈希收进
+  `SOMCP_GRADLE_DIST_MIRROR` / `SOMCP_GRADLE_DIST_SHA256`。守卫相应新增三项:
+  seed 步骤是否还在、旧重试写法是否复活、哈希是否与版本配对。
 - **`test-v11.yml` / `release.yml` 加 `timeout-minutes: 150`（低）**。
   两者都没有 job 级超时,默认 360 分钟;卡死的原生构建能占住 runner 六小时。
   实测冷启动约 65 分钟,150 分钟留约 2 倍余量。
@@ -47,6 +59,27 @@
   `pr-auto-review.yml` 的 `pushTriggered` 补触发列表同步收敛为
   `['build.yml', 'test-v11.yml']`,两处写死的「test-v7.yml」注释订正为
   `test-v11.yml`。
+- **`release.yml` 会把分支名当版本发布（高）**。`workflow_dispatch` 原来有一个
+  自由输入的 `tag`,`required: false`,三处引用写成
+  `${{ inputs.tag || github.ref_name }}`。手动触发时留空,`github.ref_name`
+  就是分支名 `main` —— 于是真的发布出了 `releases/tag/main`,带全套 6 个资产。
+  现在 `workflow_dispatch` 只剩一个布尔 `confirm`,没有填版本号的入口;
+  新增第一步 `Resolve and validate release tag`(id `release`)做四层校验:
+  手动触发必须 `confirm=true`、`GITHUB_REF_NAME` 必须匹配
+  `^v[0-9]+\.[0-9]+\.[0-9]+$`、`refs/tags/$REF_NAME` 必须真实存在、
+  tag 指向的提交必须等于 `HEAD`。通过后输出 `steps.release.outputs.tag`,
+  三处引用(发布说明的 `RELEASE_TAG`、资产命名的 `VERSION`、
+  `action-gh-release` 的 `tag_name`)统一改成它。标签一律由本地
+  `git tag` + `git push` 决定,工作流只负责构建与挂资产。
+- **发布说明的「上一版本」会取到当前版本自己（中）**。原来用
+  `git describe --tags --abbrev=0 HEAD~1`:打完 tag 之后如果又落了提交
+  (`HEAD` 不在 tag 上),`HEAD~1` 返回的**就是当前这个 tag**,
+  于是 `$PREV_TAG..HEAD` 只剩 tag 之后的提交,本版本内容全丢;
+  tag 指向分支第一个提交时则直接报错、退化成「最近 50 条提交」。
+  现在先问 `git describe --tags --abbrev=0 --match 'v*.*.*' --exclude "$RELEASE_TAG" HEAD`,
+  再补一层按版本序(`--sort=-v:refname`,保证 `v1.0.10 > v1.0.9`)取最高另一标签的回落;
+  两层都空才算初始发布。临时仓库实测:tag 之后落 2 个提交的场景,
+  旧写法区间丢掉 `release v1.0.10` 这条,新写法包含它。
 
 ## 1.0.33
 - **修掉 1.0.29 记录的 3 项遗留问题**（同一真实大样本上复测通过）。

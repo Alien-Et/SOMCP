@@ -15,7 +15,11 @@ under `SOMCP_*` names, and refers to them by `$SOMCP_*` /
 
   1. no hard-coded copy of a pinned value anywhere outside the `env:` block;
   2. the same `SOMCP_*` name carries the same value in every workflow that
-     defines it.
+     defines it;
+  3. every workflow that sets up Gradle seeds the distribution from the mirror
+     first (see tools/seed-gradle.sh) — dropping that step silently restores the
+     fragile "download from services.gradle.org and hope" path that failed run
+     42469477147, and nothing else would notice.
 
 Run from the repository root: python3 tools/check-workflow-versions.py
 Exit code 0 = consistent, 1 = problems found.
@@ -38,6 +42,13 @@ PINNED = {
     "SOMCP_BUILD_TOOLS": re.compile(r"""build-tools;\d"""),
     "SOMCP_NDK": re.compile(r"""ndk;\d"""),
     "SOMCP_CMAKE": re.compile(r"""cmake;\d+\.\d+"""),
+    # A mirror base URL written inline somewhere other than the env block would
+    # be a second source of truth for where the bytes come from.
+    "SOMCP_GRADLE_DIST_MIRROR": re.compile(r"""mirrors\.[a-z0-9.-]+/gradle"""),
+    # The pinned official sha256 of the distribution. Repetition of a 64-char
+    # hex string outside the env block means somebody pasted it next to a
+    # download instead of letting tools/seed-gradle.sh do the verification.
+    "SOMCP_GRADLE_DIST_SHA256": re.compile(r"""\b[0-9a-f]{64}\b"""),
 }
 
 # Which workflow is expected to pin which version. A workflow that builds no
@@ -50,8 +61,23 @@ EXPECTED = {
     "blutter-engines.yml": {"SOMCP_NDK"},
 }
 
+# Workflows that provision Gradle, and the one-line proof that they do it via
+# the seeded mirror copy rather than by asking the action to download.
+SEED_CALL = 'bash tools/seed-gradle.sh "$SOMCP_GRADLE_VERSION" ' \
+            '"$SOMCP_GRADLE_DIST_MIRROR" "$SOMCP_GRADLE_DIST_SHA256"'
+NEEDS_GRADLE = ("build.yml", "release.yml", "test-v11.yml")
+
+# The pinned sha256 must be tied to the pinned version, or a version bump would
+# ship a hash for the wrong archive. This cannot be verified offline (that
+# would mean trusting the same delivery channel twice); tools/seed-gradle.sh
+# verifies the real bytes at run time, and this only catches the obvious
+# "bumped one, forgot the other" edit.
+GRADLE_DIST_VERSIONED_SHA256 = {
+    "9.6.1": "9c0f7faeeb306cb14e4279a3e084ca6b596894089a0638e68a07c945a32c9e14",
+}
+
 ENV_BLOCK_RE = re.compile(r"^env:\n((?:[ \t]+.*\n|\n)*)", re.MULTILINE)
-ENV_LINE_RE = re.compile(r"""^\s+(SOMCP_[A-Z_]+):\s*(.+?)\s*$""")
+ENV_LINE_RE = re.compile(r"""^\s+(SOMCP_[A-Z0-9_]+):\s*(.+?)\s*$""")
 
 
 def parse_env(text: str) -> dict[str, str]:
@@ -74,6 +100,11 @@ def strip_comments(text: str) -> str:
     )
 
 
+def body_count(text: str, needle: str) -> int:
+    """Occurrences of a `run:` line, ignoring the explanatory prose above it."""
+    return strip_comments(text).count(needle)
+
+
 def main() -> int:
     if not WORKFLOW_DIR.is_dir():
         print(f"error: {WORKFLOW_DIR} not found (run from the repository root)")
@@ -93,10 +124,25 @@ def main() -> int:
                 problems.append(f"{name}: missing {key} in the top-level env block")
 
         # A SOMCP_* key must not be defined twice in one file.
-        keys = re.findall(r"^\s*(SOMCP_[A-Z_]+):", text, re.MULTILINE)
+        keys = re.findall(r"^\s*(SOMCP_[A-Z0-9_]+):", text, re.MULTILINE)
         dupes = {k for k in keys if keys.count(k) > 1}
         for d in sorted(dupes):
             problems.append(f"{name}: {d} is defined more than once")
+
+        if name in NEEDS_GRADLE:
+            if body_count(text, SEED_CALL) != 1:
+                problems.append(
+                    f"{name}: expected exactly one `{SEED_CALL}` step — without it "
+                    "Gradle is downloaded from services.gradle.org, which 504s"
+                )
+            gradle_step = re.search(r"^\s+- name: Set up Gradle\s*$", text, re.MULTILINE)
+            if not gradle_step:
+                problems.append(f"{name}: the seeded `Set up Gradle` step is missing")
+            if re.search(r"^\s+- name: Retry Gradle provisioning", text, re.MULTILINE):
+                problems.append(
+                    f"{name}: the `Retry Gradle provisioning` workaround is back; "
+                    "the mirror seeding replaces it"
+                )
 
         # No hard-coded copy of a pinned value outside comments.
         body = strip_comments(text)
@@ -125,6 +171,31 @@ def main() -> int:
         if len(distinct) > 1:
             detail = ", ".join(f"{f}={v}" for f, v in sorted(per_file.items()))
             problems.append(f"{key} disagrees across workflows: {detail}")
+
+    # The pinned sha256 must belong to the pinned Gradle version. Catching
+    # "bumped SOMCP_GRADLE_VERSION, forgot the hash" here is cheap; catching it
+    # on a runner is not (the run would die in the seed step).
+    dist_hashes = {
+        name: env["SOMCP_GRADLE_DIST_SHA256"]
+        for name, env in defined.items()
+        if "SOMCP_GRADLE_DIST_SHA256" in env
+    }
+    for name, env in sorted(defined.items()):
+        version = env.get("SOMCP_GRADLE_VERSION")
+        if version is None or name not in dist_hashes:
+            continue
+        known = GRADLE_DIST_VERSIONED_SHA256.get(version)
+        if known is None:
+            problems.append(
+                f"{name}: SOMCP_GRADLE_VERSION={version} is not in "
+                "GRADLE_DIST_VERSIONED_SHA256 — add it together with the sha256 "
+                "read from the official <zip>.sha256 file"
+            )
+        elif dist_hashes[name] != known:
+            problems.append(
+                f"{name}: SOMCP_GRADLE_DIST_SHA256 is not the hash of Gradle "
+                f"{version} (expected {known}, got {dist_hashes[name]})"
+            )
 
     if problems:
         print("workflow toolchain versions are inconsistent:\n")
