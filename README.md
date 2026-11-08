@@ -25,7 +25,7 @@ LIEF 重写与修复、补丁会话、构建导出、Flutter AOT 分析、JNI �
 | 项 | 值 |
 | --- | --- |
 | 包名 | `com.soreverse.mcp` |
-| 版本 | `1.0.33`（`versionCode` 34） |
+| 版本 | `2.0.0`（`versionCode` 35） |
 | 最低系统 | Android 8.0 / API 26 |
 | 目标 SDK | 36 |
 | 默认端口 | `8000` |
@@ -405,8 +405,8 @@ Unidbg 模拟执行可用；本地 debug 包因 submodule 常为空，`emulate_*
 **标签是唯一来源，工作流不造标签**。发版就三步：
 
 ```bash
-git tag v1.0.34            # 按仓库已有标签序列递增
-git push origin v1.0.34    # 手动推标签，不要由脚本代劳
+git tag v2.0.0             # 按仓库已有标签序列递增
+git push origin v2.0.0     # 手动推标签，不要由脚本代劳
 ```
 
 `release.yml` 被这个 tag push 触发后自动完成构建与发布，发布说明取
