@@ -1,6 +1,12 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# 更新日志## 1.0.27
+# 更新日志
+
+## 1.0.28
+- **订正 `FLUTTER_VERSION_NOT_SUPPORTED` 的文案：runner 不需要随 APK 分发**（`BlutterCoordinator.kt`、`docs/18`）。这个报错此前写着「a missing runner cannot be fetched onto the device at runtime — it has to ship inside the APK's native lib directory」，`missingRunner.source` 也写着「build-time only (must ship in lib/<abi>/ of the APK)」—— 那是**第三轮的结论，第四轮已经推翻**：Android 限制的是外部存储那类「其他方可能篡改」的位置，**应用自己的 `files/` 目录可以按绝对路径 `dlopen`**，`BlutterEngineStore` 与 `flutter_blutter(action=engines)` 就是为此实现的。文案与实际能力矛盾，会把调用方引向「重建 APK」这条不必要的路（实测：分析某 Flutter 应用时这个报错就是这么误导的）。
+  - 现在报错直接给出**可执行的两步**：`missingRunner` 增加 `fileName`（`dartvm_<dartVersion>.so`）与 `installDirectory`（`<app files>/blutter-engines` 的绝对路径），`message` 说明放进去重试即可、无需重建 APK，并指出 runner 的两个来源（`blutter-engines` workflow / `tools/blutter-matrix/build-blutter-runners.sh`）；`nextActions` 也按这个顺序重写（原来是「rebuild SOMCP with a Blutter runner for Dart X」）。
+
+## 1.0.27
 - **用某 Flutter 应用（`com.example.app`，150 MB APK / 68 个 SO）做真实样本回归时，`str_literal_classes` 又暴露两类 `base64_like` 误报**（`StringCensus.kt`）。前两轮修的是 Java 驼峰标识符与 Java 包路径，这一轮的两个新形态都不在其中：
   - **Itanium C++ 修饰名**：样本加固库.so（某厂商加固）里 `<ns>::detect::DetectMalware` 编成 `N<len><ns>6detect13DetectMalwareE` —— 大小写混合 + 含数字，旧判据三条全中，一次报出 8 个误报（`…5FridaE` / `…6XposedE` / `…6MagiskE` / `…5CydiaE` / `…8HookBaseE` / `…13DetectReverseE` / `…12SafetyDetectE` / `…13DetectMalwareE`）。新增 `looksMangledCppName()`：`_Z` 前缀（且余下只含字母数字下划线）或 `N…E` 的 `<十进制长度><标识符>` 分量序列，能整串消费才判定。
   - **含数字或缩写的标识符**：样本加固库2.so（某厂商加固 SDK）的 `.dynstr` 里，`saveAppInfo2File`（含数字 `2`）、`delayRestoreSIGILLHandler`（含缩写 `SIGILL`）、`getJavaStaticMethodID`（含 `ID`）等 22 个函数名被判 `base64_like`。根因是 `CAMEL_RE` 要求「纯字母 + 每个大写后必跟小写」，这两种都过不了。新增 `looksIdentifierLike()`，改用统计特征：只含字母数字 + 以字母开头 + 最长小写连续段 ≥ 3 + 大写占比 ≤ 45% + 数字占比 ≤ 25%。用 15 个真实标识符与 13 个真实 base64 校准：标识符 15/15 命中，base64 12/13 正确放行。

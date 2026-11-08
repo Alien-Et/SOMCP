@@ -283,15 +283,28 @@ internal class BlutterCoordinator(
             .put("analysis", requirement.analysis)
         val range = describeSupport(supported)
         val requiredDart = requirement.dartVersion
+        // 【修复】文案订正：旧消息写着「runner 无法在运行时获取、必须打进 APK 的
+        // lib/」—— 那是第四轮之前的结论，已被推翻。Android 限制的是外部存储那类
+        // 「其他方可能篡改」的位置，**应用自己的 files/ 目录可以 dlopen 绝对路径**，
+        // BlutterEngineStore 就是干这个的（`flutter_blutter(action=engines)` 可查）。
+        // 让报错直接把「把哪个文件放到哪个目录」说出来，而不是叫用户去重建 APK。
+        val engineStore = BlutterEngineStore(context)
+        val engineDir = runCatching { engineStore.root.absolutePath }.getOrNull()
+            ?: "…/files/${BlutterEngineStore.DIR_NAME}"
+        val runnerFileName = requiredDart?.let { BlutterEngineStore.fileNameFor(it) }
+            ?: "dartvm_<dartVersion>.so"
         val error = JSONObject()
             .put("code", "FLUTTER_VERSION_NOT_SUPPORTED")
             .put(
                 "message",
-                "This build embeds only the $range Blutter runner, and the target APK's Dart snapshot does not match it. " +
-                    "Blutter needs a Dart VM parser compiled from the matching Flutter engine revision, so a missing runner " +
-                    "cannot be fetched onto the device at runtime — it has to ship inside the APK's native lib directory. " +
-                    "Either analyse an APK built with $range, or rebuild SOMCP with a runner for the version in `missingRunner` " +
-                    "(see docs/11.Flutter与Blutter.md)."
+                "This build embeds the $range Blutter runner, and the target APK's Dart snapshot does not match it. " +
+                    "Blutter needs a Dart VM parser built from the matching Flutter engine revision, so a runner for " +
+                    "Dart ${requiredDart ?: "?"} is not installed. It does NOT have to be built into the APK: this app " +
+                    "also loads runners from its own private directory by absolute path, so drop `$runnerFileName` into " +
+                    "`$engineDir` and retry — no APK rebuild needed. Get that file from the `blutter-engines` workflow " +
+                    "(.github/workflows/blutter-engines.yml) or build it with tools/blutter-matrix/build-blutter-runners.sh. " +
+                    "`flutter_blutter(action=engines)` prints the directory and what is already installed. " +
+                    "Alternatively analyse an APK built with $range (see docs/11.Flutter与Blutter.md)."
             )
             .put("recoverable", false)
             .put("stage", "runner_selection")
@@ -311,7 +324,13 @@ internal class BlutterCoordinator(
                     .put("snapshotHash", requirement.snapshotHash ?: JSONObject.NULL)
                     .put("abi", requirement.abi)
                     .put("compressedPointers", requirement.compressedPointers)
-                    .put("source", "build-time only (must ship in lib/<abi>/ of the APK)")
+                    .put("fileName", runnerFileName)
+                    .put("installDirectory", engineDir)
+                    .put(
+                        "source",
+                        "local runner store — drop the file into installDirectory and retry " +
+                            "(or ship it in lib/<abi>/ of the APK at build time)"
+                    )
             )
             .put("coverageHints", registry.coverageHints(requirement))
         store.update(jobId, "failed", "runner_selection", error)
@@ -324,11 +343,18 @@ internal class BlutterCoordinator(
                 .put("error", error)
                 .put(
                     "nextActions",
-                    JSONArray().put("use a Flutter ${stringList(supported.optJSONArray("flutterVersions")).joinToString("–")} APK")
+                    JSONArray()
+                        .put(
+                            "copy $runnerFileName into $engineDir, then retry analyze " +
+                                "(flutter_blutter(action=engines) shows the directory and installed runners)"
+                        )
+                        .put(
+                            "fetch or build that runner via .github/workflows/blutter-engines.yml " +
+                                "or tools/blutter-matrix/build-blutter-runners.sh"
+                        )
                         .put("inspect the APK fingerprint without running analysis")
                         .put(
-                            "rebuild SOMCP with a Blutter runner for Dart ${requiredDart ?: "?"} " +
-                                "(engineRevision ${requirement.engineRevision ?: "?"}); see missingRunner"
+                            "use a Flutter ${stringList(supported.optJSONArray("flutterVersions")).joinToString("–")} APK instead"
                         )
                 )
         )
