@@ -1,11 +1,10 @@
 package com.soreverse.mcp.engine
 
 import com.soreverse.mcp.core.HexCodec
-import com.soreverse.mcp.core.optText
-
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.ok
+import com.soreverse.mcp.core.optText
 import com.soreverse.mcp.nativecore.NativeEngine
 import org.json.JSONArray
 import org.json.JSONObject
@@ -391,7 +390,7 @@ internal fun EngineRuntime.editAsm(workspaceId: String, editSessionId: String, l
                 if (alignment > 1 && range.second % alignment != 0) {
                     return@withSession err(
                         "SIZE_MISMATCH",
-                        "Selected range ${range.second}B is not a multiple of the ${alignment}-byte instruction size for ${elf.architecture}. Use instructionCount (multiplied by the instruction size) or pass a byteLength that is a multiple of $alignment.",
+                        "Selected range ${range.second}B is not a multiple of the $alignment-byte instruction size for ${elf.architecture}. Use instructionCount (multiplied by the instruction size) or pass a byteLength that is a multiple of $alignment.",
                         "edits[$i]",
                         JSONObject().put("byteLength", range.second).put("alignment", alignment)
                     )
@@ -725,9 +724,12 @@ internal fun parseOffsetField(value: Any?): Int? = when (value) {
     is Number -> value.toInt().takeIf { it >= 0 }
     is String -> {
         val t = value.trim()
-        if (t.isEmpty()) null
-        else t.toIntOrNull()
-            ?: HexCodec.long(t)?.takeIf { it <= Int.MAX_VALUE }?.toInt()?.takeIf { it >= 0 }
+        if (t.isEmpty()) {
+            null
+        } else {
+            t.toIntOrNull()
+                ?: HexCodec.long(t)?.takeIf { it <= Int.MAX_VALUE }?.toInt()?.takeIf { it >= 0 }
+        }
     }
     else -> null
 }

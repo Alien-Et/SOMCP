@@ -47,7 +47,7 @@ internal object PatchByteUtils {
         if (length <= 0 || pattern.isEmpty()) return ByteArray(0)
         val step = pattern.size
         require(length % step == 0) {
-            "Refusing to emit a partial ${step}-byte pattern: length $length is not a multiple of $step"
+            "Refusing to emit a partial $step-byte pattern: length $length is not a multiple of $step"
         }
         val out = ByteArray(length)
         var pos = 0
@@ -67,11 +67,7 @@ internal object PatchByteUtils {
      * JSONObject allocations plus a gigantic response body. [truncated] and
      * [diffBytes] let callers disclose that the range list is partial.
      */
-    class ByteDiffResult(
-        val ranges: JSONArray,
-        val truncated: Boolean,
-        val diffBytes: Long
-    )
+    class ByteDiffResult(val ranges: JSONArray, val truncated: Boolean, val diffBytes: Long)
 
     fun diffRanges(a: ByteArray, b: ByteArray, maxRanges: Int = DEFAULT_MAX_DIFF_RANGES): ByteDiffResult {
         val ranges = JSONArray()
@@ -116,8 +112,7 @@ internal object PatchByteUtils {
     }
 
     /** Range-only convenience wrapper; bounded by the same default cap. */
-    fun byteDiffRanges(a: ByteArray, b: ByteArray, maxRanges: Int = DEFAULT_MAX_DIFF_RANGES): JSONArray =
-        diffRanges(a, b, maxRanges).ranges
+    fun byteDiffRanges(a: ByteArray, b: ByteArray, maxRanges: Int = DEFAULT_MAX_DIFF_RANGES): JSONArray = diffRanges(a, b, maxRanges).ranges
 
     const val DEFAULT_MAX_DIFF_RANGES = 256
 

@@ -85,12 +85,15 @@ internal object ApkAnalyzer {
                     dexFiles.put(name)
                 }
                 if (!entry.isDirectory &&
-                    (name.startsWith("META-INF/") &&
-                        (name.endsWith(".RSA", true) ||
-                            name.endsWith(".DSA", true) ||
-                            name.endsWith(".EC", true) ||
-                            name.endsWith(".SF", true) ||
-                            name.endsWith("MANIFEST.MF", true))
+                    (
+                        name.startsWith("META-INF/") &&
+                            (
+                                name.endsWith(".RSA", true) ||
+                                    name.endsWith(".DSA", true) ||
+                                    name.endsWith(".EC", true) ||
+                                    name.endsWith(".SF", true) ||
+                                    name.endsWith("MANIFEST.MF", true)
+                                )
                         )
                 ) {
                     signatures.put(name)
@@ -100,8 +103,10 @@ internal object ApkAnalyzer {
                 // 声明后从未赋值，永远是 present:false / 0 —— 等于什么都没解析。
                 // 现在对 AndroidManifest.xml 和 classes*.dex 读内容做真实解析。
                 val shouldParse = !entry.isDirectory &&
-                    (name == "AndroidManifest.xml" ||
-                        name.matches(Regex("^classes(?:[2-9][0-9]*)?\\.dex$")))
+                    (
+                        name == "AndroidManifest.xml" ||
+                            name.matches(Regex("^classes(?:[2-9][0-9]*)?\\.dex$"))
+                        )
                 if (shouldParse) {
                     val data = readEntry(zip, name, limits, parsedBytes)
                     parsedBytes += data.size
@@ -244,16 +249,25 @@ internal object ApkAnalyzer {
                         )
                     }
                     if (!entry.isDirectory && name.endsWith(".dex", true)) dexFiles.put(name)
-                    if (!entry.isDirectory && name.startsWith("META-INF/") &&
-                        (name.endsWith(".RSA", true) || name.endsWith(".DSA", true) ||
-                            name.endsWith(".EC", true) || name.endsWith(".SF", true) ||
-                            name.endsWith("MANIFEST.MF", true))
-                    ) signatures.put(name)
+                    if (!entry.isDirectory &&
+                        name.startsWith("META-INF/") &&
+                        (
+                            name.endsWith(".RSA", true) ||
+                                name.endsWith(".DSA", true) ||
+                                name.endsWith(".EC", true) ||
+                                name.endsWith(".SF", true) ||
+                                name.endsWith("MANIFEST.MF", true)
+                            )
+                    ) {
+                        signatures.put(name)
+                    }
                     if (!entry.isDirectory && name == "resources.arsc") resourcesArsc = true
                     // 真正解析：只对这两个目标读内容，其余条目只走条目头
                     val shouldParse = !entry.isDirectory &&
-                        (name == "AndroidManifest.xml" ||
-                            name.matches(Regex("^classes(?:[2-9][0-9]*)?\\.dex$")))
+                        (
+                            name == "AndroidManifest.xml" ||
+                                name.matches(Regex("^classes(?:[2-9][0-9]*)?\\.dex$"))
+                            )
                     if (shouldParse) {
                         val data = readEntry(zip, name, limits, parsedBytes)
                         parsedBytes += data.size
@@ -325,10 +339,7 @@ internal object ApkAnalyzer {
     }
 
     /** 统计流经的字节数，同时把每一段喂给摘要。 */
-    private class CountingInputStream(
-        private val delegate: java.io.InputStream,
-        private val onBytes: (Int, ByteArray, Int) -> Unit
-    ) : java.io.InputStream() {
+    private class CountingInputStream(private val delegate: java.io.InputStream, private val onBytes: (Int, ByteArray, Int) -> Unit) : java.io.InputStream() {
         override fun read(): Int {
             val b = delegate.read()
             if (b >= 0) {

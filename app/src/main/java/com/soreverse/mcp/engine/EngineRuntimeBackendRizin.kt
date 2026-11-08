@@ -1,10 +1,9 @@
 package com.soreverse.mcp.engine
 
-import com.soreverse.mcp.core.optNonBlankText
-
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.ok
+import com.soreverse.mcp.core.optNonBlankText
 import com.soreverse.mcp.nativecore.NativeEngine
 import java.util.UUID
 import org.json.JSONArray
@@ -474,7 +473,14 @@ private fun EngineRuntime.aarch64GotBlrXrefs(bytes: ByteArray, elf: ElfFile, got
     return found
 }
 
-internal fun EngineRuntime.rzSearchBytes(workspaceId: String, editSessionId: String, pattern: String, fromVa: Long = 0, toVa: Long = 0, limit: Int = 50): JSONObject = guarded {
+internal fun EngineRuntime.rzSearchBytes(
+    workspaceId: String,
+    editSessionId: String,
+    pattern: String,
+    fromVa: Long = 0,
+    toVa: Long = 0,
+    limit: Int = 50
+): JSONObject = guarded {
     val bytes = dataFor(workspaceId, editSessionId)
     val elf = elfFor(workspaceId, editSessionId)
     if (!NativeEngine.active().available()) {
@@ -519,7 +525,9 @@ internal fun EngineRuntime.rzSearchBytes(workspaceId: String, editSessionId: Str
         val capped = JSONArray()
         for (i in 0 until limit) capped.put(fallbackHits.get(i))
         capped
-    } else fallbackHits
+    } else {
+        fallbackHits
+    }
     ok(
         JSONObject()
             .put("hits", cappedFallback)

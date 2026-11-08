@@ -38,21 +38,17 @@ import org.json.JSONObject
  * - 值为空字符串    → null
  * - 其余            → 原文本
  */
-internal fun JSONObject.optText(key: String): String? =
-    if (!has(key) || isNull(key)) null else optString(key).takeIf { it.isNotEmpty() }
+internal fun JSONObject.optText(key: String): String? = if (!has(key) || isNull(key)) null else optString(key).takeIf { it.isNotEmpty() }
 
 /** 同 [optText]，但把空白串一并视为"没有值"。 */
-internal fun JSONObject.optNonBlankText(key: String): String? =
-    optText(key)?.takeIf { it.isNotBlank() }
+internal fun JSONObject.optNonBlankText(key: String): String? = optText(key)?.takeIf { it.isNotBlank() }
 
 /**
  * 【修复 B4】数组版本。`JSONArray.optString(i)` 对 `JSONObject.NULL` 元素同样返回
  * 字符串 `"null"`，因此 `optString(i).takeIf { it.isNotBlank() }` 会把 `"null"` 当成
  * 有效版本号/标识继续传给下游（例如 Blutter 的 engineRevision / dartVersion）。
  */
-internal fun JSONArray.optText(index: Int): String? =
-    if (isNull(index)) null else optString(index).takeIf { it.isNotEmpty() }
+internal fun JSONArray.optText(index: Int): String? = if (isNull(index)) null else optString(index).takeIf { it.isNotEmpty() }
 
 /** 同 [optText]，但把空白串一并视为"没有值"。 */
-internal fun JSONArray.optNonBlankText(index: Int): String? =
-    optText(index)?.takeIf { it.isNotBlank() }
+internal fun JSONArray.optNonBlankText(index: Int): String? = optText(index)?.takeIf { it.isNotBlank() }

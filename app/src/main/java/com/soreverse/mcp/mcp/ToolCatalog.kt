@@ -12,8 +12,6 @@
 //
 package com.soreverse.mcp.mcp
 
-import com.soreverse.mcp.core.optNonBlankText
-
 import android.util.Base64
 import com.soreverse.mcp.core.AppLog
 import com.soreverse.mcp.core.HexCodec
@@ -22,8 +20,8 @@ import com.soreverse.mcp.core.doubleValue
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.intValue
 import com.soreverse.mcp.core.ok
+import com.soreverse.mcp.core.optNonBlankText
 import com.soreverse.mcp.core.str
-import com.soreverse.mcp.core.toJsonArray
 import com.soreverse.mcp.engine.REPORT_SAMPLE_LIMIT
 import java.security.MessageDigest
 import org.json.JSONArray
@@ -60,7 +58,8 @@ object ToolCatalog {
                     "prefix" str "Path or file prefix filter (action=list)"
                     "limit" int "Maximum items (action=list)"
                     "cursor" str "Pagination cursor (action=list)"
-                    "temporary" bool "Mark the workspace as disposable: it is evicted first when the 8-workspace open limit is reached. Workspaces live in memory only — nothing survives an app restart either way."
+                    "temporary" bool
+                        "Mark the workspace as disposable: it is evicted first when the 8-workspace open limit is reached. Workspaces live in memory only — nothing survives an app restart either way."
                 }
             )
         }
@@ -890,10 +889,10 @@ object ToolCatalog {
                     a.str("editSessionId"),
                     a.str("locator"),
                     a.optJSONArray("edits") ?: return@EngineToolHandler err(
-                    "INVALID_ARGUMENT",
-                    "edits[] is required for this mode (see the tool schema)",
-                    "edits"
-                ),
+                        "INVALID_ARGUMENT",
+                        "edits[] is required for this mode (see the tool schema)",
+                        "edits"
+                    ),
                     a.bool("dryRun")
                 )
             }
@@ -1620,7 +1619,6 @@ object ToolCatalog {
     }
 
     // 【魔改】已移除 AI 工具：dynamic_analyze_ai / static_analyze_ai / agent_api
-
 
     private val unidbgSession = EngineToolHandler(
         ToolMeta(

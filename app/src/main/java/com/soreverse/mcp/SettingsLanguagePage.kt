@@ -20,7 +20,7 @@ internal fun SettingsLanguagePage(t: UiText, language: String, onLanguage: (Stri
             )
         }
         GlassGroup(
-            title = if (t.zh) "说明" else "Note",
+            title = if (t.zh) "说明" else "Note"
         ) {
             Text(
                 if (t.zh) {

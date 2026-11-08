@@ -57,10 +57,11 @@ internal object ApkSigTools {
     private fun hexStr(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
     /** ELF magic：7F 45 4C 46（"\x7fELF"）。 */
-    private fun isElfMagic(b: ByteArray): Boolean =
-        b.size >= 4 &&
-            b[0] == 0x7F.toByte() && b[1] == 0x45.toByte() &&
-            b[2] == 0x4C.toByte() && b[3] == 0x46.toByte()
+    private fun isElfMagic(b: ByteArray): Boolean = b.size >= 4 &&
+        b[0] == 0x7F.toByte() &&
+        b[1] == 0x45.toByte() &&
+        b[2] == 0x4C.toByte() &&
+        b[3] == 0x46.toByte()
 
     // ── ZIP layout ──
 

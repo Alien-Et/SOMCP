@@ -1,10 +1,6 @@
 package com.soreverse.mcp
 
-import android.content.Intent
-import android.net.Uri
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -15,35 +11,31 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Surface
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -56,22 +48,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.soreverse.mcp.core.AppLog
-import com.soreverse.mcp.core.EngineProvider
 import com.soreverse.mcp.core.RootShell
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.service.McpForegroundService
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 
 @Composable
 internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () -> Unit, onOpenSettings: () -> Unit) {
@@ -262,7 +248,7 @@ internal fun ServiceTab(t: UiText, settings: SettingsStore, onOpenKeepAlive: () 
                 loopback = secured(loopbackUrl),
                 lan = lanUrl,
                 onCopyLoopback = { copy(context, secured(loopbackUrl), t.copied) },
-                onCopyLan = { copy(context, secured(lanUrl), t.copied) },
+                onCopyLan = { copy(context, secured(lanUrl), t.copied) }
             )
         }
     }
@@ -451,12 +437,7 @@ private fun StatusCard(t: UiText, running: Boolean, port: Int, onPower: () -> Un
  * 按钮，用户在管理器里改完授权不用重启 App 即可刷新状态。
  */
 @Composable
-private fun RootGrantCard(
-    t: UiText,
-    granted: Boolean,
-    onRecheck: () -> Unit,
-    modifier: Modifier = Modifier
-) {
+private fun RootGrantCard(t: UiText, granted: Boolean, onRecheck: () -> Unit, modifier: Modifier = Modifier) {
     val accent = if (granted) statusSuccess() else AppleColors.systemOrange
     Column(
         modifier
@@ -586,14 +567,7 @@ private fun StatusRow(label: String, value: String, ok: Boolean, hint: String, o
 }
 
 @Composable
-private fun EndpointBoard(
-    t: UiText,
-    loopback: String,
-    lan: String,
-    onCopyLoopback: () -> Unit,
-    onCopyLan: () -> Unit,
-    modifier: Modifier = Modifier
-) {
+private fun EndpointBoard(t: UiText, loopback: String, lan: String, onCopyLoopback: () -> Unit, onCopyLan: () -> Unit, modifier: Modifier = Modifier) {
     ModernCardBare(modifier = modifier) {
         Row(
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -611,7 +585,7 @@ private fun EndpointBoard(
             label = if (t.zh) "本机回环" else "Loopback",
             value = loopback,
             copyLabel = if (t.zh) "复制" else "Copy",
-            onCopy = onCopyLoopback,
+            onCopy = onCopyLoopback
         )
         Spacer(Modifier.height(4.dp))
         EndpointRow(
@@ -686,8 +660,7 @@ private fun DiagnosisLine(label: String, ok: Boolean, detail: String) {
     }
 }
 
-private fun setupPromptTitle(target: SetupTarget, zh: Boolean): String =
-    if (zh) "保活状态" else "Keep-alive status"
+private fun setupPromptTitle(target: SetupTarget, zh: Boolean): String = if (zh) "保活状态" else "Keep-alive status"
 
 private fun setupPromptBody(target: SetupTarget, zh: Boolean, keepAliveReady: Boolean): String = when (target) {
     SetupTarget.KeepAlive -> if (zh) {

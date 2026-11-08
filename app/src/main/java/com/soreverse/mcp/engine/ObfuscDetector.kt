@@ -19,9 +19,9 @@ package com.soreverse.mcp.engine
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.ok
 import com.soreverse.mcp.nativecore.NativeEngine
+import kotlin.math.ceil
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.ceil
 
 /**
  * A CFF dispatcher is the block every real block funnels back into, so it must
@@ -282,7 +282,11 @@ internal fun EngineRuntime.obfuscScan(workspaceId: String, editSessionId: String
             .put("functions", results)
             .put(
                 "method",
-                "Structural CFG analysis: a dispatcher must be reached by ${"%.1f".format(DISPATCHER_MIN_RATIO)}x the function's average in-degree and collect at least ${"%.0f".format(DISPATCHER_MIN_EDGE_SHARE * 100)}% of its edges, with a thin body and excluding the entry block; flattening factor and thin-block ratio follow. No symbol-name heuristics are used."
+                "Structural CFG analysis: a dispatcher must be reached by ${"%.1f".format(
+                    DISPATCHER_MIN_RATIO
+                )}x the function's average in-degree and collect at least ${"%.0f".format(
+                    DISPATCHER_MIN_EDGE_SHARE * 100
+                )}% of its edges, with a thin body and excluding the entry block; flattening factor and thin-block ratio follow. No symbol-name heuristics are used."
             )
             .put(
                 "limits",

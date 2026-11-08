@@ -24,23 +24,23 @@ internal object ElfAudit {
     // 样本A.so 上把 .dynsym 的 62 段 19 字节零值、.dynamic、.got、.got.plt、
     // .data 全报成「可 patch 空洞」。
     private val NON_CAVE_SECTION_TYPES = setOf(
-        2L,           // SHT_SYMTAB
-        3L,           // SHT_STRTAB
-        4L,           // SHT_RELA
-        5L,           // SHT_HASH
-        6L,           // SHT_DYNAMIC
-        7L,           // SHT_NOTE
-        9L,           // SHT_REL
-        11L,          // SHT_DYNSYM
-        14L,          // SHT_INIT_ARRAY
-        15L,          // SHT_FINI_ARRAY
-        16L,          // SHT_PREINIT_ARRAY
-        17L,          // SHT_GROUP
-        18L,          // SHT_SYMTAB_SHNDX
-        0x6ffffff6L,  // SHT_GNU_HASH
-        0x6ffffffdL,  // SHT_GNU_verdef
-        0x6ffffffeL,  // SHT_GNU_verneed
-        0x6fffffffL,  // SHT_GNU_versym
+        2L, // SHT_SYMTAB
+        3L, // SHT_STRTAB
+        4L, // SHT_RELA
+        5L, // SHT_HASH
+        6L, // SHT_DYNAMIC
+        7L, // SHT_NOTE
+        9L, // SHT_REL
+        11L, // SHT_DYNSYM
+        14L, // SHT_INIT_ARRAY
+        15L, // SHT_FINI_ARRAY
+        16L, // SHT_PREINIT_ARRAY
+        17L, // SHT_GROUP
+        18L, // SHT_SYMTAB_SHNDX
+        0x6ffffff6L, // SHT_GNU_HASH
+        0x6ffffffdL, // SHT_GNU_verdef
+        0x6ffffffeL, // SHT_GNU_verneed
+        0x6fffffffL // SHT_GNU_versym
     )
 
     private val NON_CAVE_SECTION_NAMES = setOf(
@@ -50,7 +50,7 @@ internal object ElfAudit {
         ".rela.dyn", ".rela.plt", ".rel.dyn", ".rel.plt", ".relr.dyn",
         ".init_array", ".fini_array", ".preinit_array",
         ".eh_frame", ".eh_frame_hdr", ".ARM.exidx", ".ARM.extab",
-        ".note.android.ident", ".comment", ".note.gnu.build-id",
+        ".note.android.ident", ".comment", ".note.gnu.build-id"
     )
 
     /** 结构性节判定：类型或名字命中即视为不可当空洞。 */

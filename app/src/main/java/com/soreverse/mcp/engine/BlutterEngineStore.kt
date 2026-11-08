@@ -19,10 +19,10 @@ package com.soreverse.mcp.engine
 
 import android.content.Context
 import com.soreverse.mcp.core.AppLog
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * 【新增】按需下载的 Blutter runner 的本地存储与发现。
@@ -80,8 +80,7 @@ internal class BlutterEngineStore(private val context: Context) {
     }
 
     /** 目录里是否已经有该 Dart 版本的 runner。 */
-    fun hasDartVersion(dartVersion: String): Boolean =
-        localRunners().any { it.dartVersion == dartVersion }
+    fun hasDartVersion(dartVersion: String): Boolean = localRunners().any { it.dartVersion == dartVersion }
 
     /** 删除某个 Dart 版本的本地 runner，返回是否真的删掉了。 */
     fun deleteDartVersion(dartVersion: String): Boolean {
@@ -174,31 +173,30 @@ internal class BlutterEngineStore(private val context: Context) {
      * 不按约定命名的文件会被跳过 —— 版本猜错比"用不上"更糟：Blutter 对快照
      * 格式是硬绑定的，错配只会在解析阶段 abort。
      */
-    private fun scanByFileName(dir: File): List<BlutterRunnerDescriptor> =
-        dir.listFiles().orEmpty()
-            .filter { it.isFile && it.name.startsWith("dartvm_") && it.name.endsWith(".so") }
-            .mapNotNull { file ->
-                val version = file.name.removePrefix("dartvm_").removeSuffix(".so")
-                if (version.isBlank() || !version.first().isDigit()) return@mapNotNull null
-                BlutterRunnerDescriptor(
-                    runnerId = "local-dart-${version.replace('.', '_')}-${abiOf(context)}",
-                    dartVersion = version,
-                    engineRevision = null,
-                    abi = abiOf(context),
-                    // 现代 Dart AOT（3.x 起）默认 compressed pointers；如与实际不符，
-                    // 请在 runners.local.json 里显式声明覆盖。
-                    compressedPointers = true,
-                    analysis = true,
-                    sha256 = sha256Of(file),
-                    source = SOURCE_LOCAL,
-                    libraryName = file.absolutePath,
-                    upstreamCommit = "",
-                    snapshotAliases = emptyList(),
-                    engineRevisions = emptyList(),
-                    flutterVersions = emptyList(),
-                    snapshotHashes = emptySet()
-                )
-            }
+    private fun scanByFileName(dir: File): List<BlutterRunnerDescriptor> = dir.listFiles().orEmpty()
+        .filter { it.isFile && it.name.startsWith("dartvm_") && it.name.endsWith(".so") }
+        .mapNotNull { file ->
+            val version = file.name.removePrefix("dartvm_").removeSuffix(".so")
+            if (version.isBlank() || !version.first().isDigit()) return@mapNotNull null
+            BlutterRunnerDescriptor(
+                runnerId = "local-dart-${version.replace('.', '_')}-${abiOf(context)}",
+                dartVersion = version,
+                engineRevision = null,
+                abi = abiOf(context),
+                // 现代 Dart AOT（3.x 起）默认 compressed pointers；如与实际不符，
+                // 请在 runners.local.json 里显式声明覆盖。
+                compressedPointers = true,
+                analysis = true,
+                sha256 = sha256Of(file),
+                source = SOURCE_LOCAL,
+                libraryName = file.absolutePath,
+                upstreamCommit = "",
+                snapshotAliases = emptyList(),
+                engineRevisions = emptyList(),
+                flutterVersions = emptyList(),
+                snapshotHashes = emptySet()
+            )
+        }
 
     private fun sha256Of(file: File): String {
         val cached = shaCache[file.absolutePath]
@@ -221,6 +219,7 @@ internal class BlutterEngineStore(private val context: Context) {
     companion object {
         const val DIR_NAME = "blutter-engines"
         const val EXPLICIT_MANIFEST = "runners.local.json"
+
         /** 与内置 runner 的 `source` 字段区分。 */
         const val SOURCE_LOCAL = "local"
 

@@ -14,7 +14,7 @@ object SelfArtifactGuard {
 
     /** 始终放行。 */
     @Volatile
-    var ALLOW_SELF_ANALYSIS: Boolean = true
+    var allowSelfAnalysis: Boolean = true
 
     data class Verdict(val value: String, val identifiers: List<String> = emptyList())
 

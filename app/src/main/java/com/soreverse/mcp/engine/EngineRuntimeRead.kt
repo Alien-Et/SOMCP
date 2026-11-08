@@ -1,11 +1,10 @@
 package com.soreverse.mcp.engine
 
-import com.soreverse.mcp.core.optNonBlankText
-
 import com.soreverse.mcp.core.HexCodec
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.ok
+import com.soreverse.mcp.core.optNonBlankText
 import com.soreverse.mcp.core.toJsonArray
 import com.soreverse.mcp.nativecore.NativeEngine
 import kotlin.math.min
@@ -770,13 +769,7 @@ internal fun EngineRuntime.disasm(
  */
 private data class OutlineTarget(val name: String, val addr: Long, val size: Long)
 
-private fun EngineRuntime.resolveOutlineTarget(
-    workspaceId: String,
-    editSessionId: String,
-    elf: ElfFile,
-    locator: String,
-    name: String
-): OutlineTarget? {
+private fun EngineRuntime.resolveOutlineTarget(workspaceId: String, editSessionId: String, elf: ElfFile, locator: String, name: String): OutlineTarget? {
     (elf.symbols + elf.dynSymbols).firstOrNull { it.name == name }?.let {
         return OutlineTarget(it.name, it.value and -2L, it.size)
     }
@@ -885,7 +878,8 @@ internal fun EngineRuntime.xrefString(workspaceId: String, editSessionId: String
             "INVALID_LOCATOR",
             "String locator is empty. Pass the locator from search_strings (e.g. \"so_string:lib.so!a24\") " +
                 "or a bare hex offset/VA (e.g. \"a24\" / \"0xa24\" / \"0x1100\").",
-            "locator", locator
+            "locator",
+            locator
         )
     }
     // 【修复】旧实现用 `toLongOrNull(16)`，把 "0xa24" 这种带前缀的十六进制地址判成非法，
@@ -899,7 +893,8 @@ internal fun EngineRuntime.xrefString(workspaceId: String, editSessionId: String
             "INVALID_LOCATOR",
             "Cannot parse \"$raw\" as a hex offset/VA. Expected the string locator from search_strings " +
                 "(so_string:<file>!<hex>) or a bare hex number such as \"0x1100\".",
-            "locator", locator
+            "locator",
+            locator
         )
 
     // 坐标轴判定：先按文件偏移找所在节，再按 VA 找所在节。
@@ -913,7 +908,8 @@ internal fun EngineRuntime.xrefString(workspaceId: String, editSessionId: String
             "LOCATOR_OUT_OF_RANGE",
             "\"0x${parsed.toString(16)}\" is not inside any section of ${elf.sections.size} sections. " +
                 "File is ${dataFor(workspaceId, editSessionId).size} bytes.",
-            "locator", locator
+            "locator",
+            locator
         )
     }
 

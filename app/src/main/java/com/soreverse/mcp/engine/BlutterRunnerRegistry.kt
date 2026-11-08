@@ -113,9 +113,8 @@ internal object BlutterRunnerMatcher {
  *
  * 两处都要放行，否则本地 runner 会在解析 manifest 时被静默丢弃。
  */
-internal fun validRunnerLibrary(value: String): Boolean =
-    value.matches(Regex("^blutter_[A-Za-z0-9_]+$")) ||
-        (value.startsWith("/") && value.endsWith(".so") && !value.contains(".."))
+internal fun validRunnerLibrary(value: String): Boolean = value.matches(Regex("^blutter_[A-Za-z0-9_]+$")) ||
+    (value.startsWith("/") && value.endsWith(".so") && !value.contains(".."))
 
 internal object BlutterRunnerManifest {
     /** Numeric-aware ordering so 3.44.10 sorts after 3.44.7. */
@@ -248,6 +247,7 @@ internal object BlutterRunnerManifest {
 internal class BlutterRunnerRegistry(private val context: Context) {
     private val manifest by lazy { loadManifest() }
     val upstreamCommit: String get() = manifest.optString("upstreamCommit")
+
     /**
      * 内置 runner（APK 的 jniLibs）+ 本地 runner（应用私有目录里按需下载的）。
      *

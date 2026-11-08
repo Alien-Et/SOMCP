@@ -309,7 +309,7 @@ internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSON
             )
         }
         return@guarded try {
-            if (!com.soreverse.mcp.core.SelfArtifactGuard.ALLOW_SELF_ANALYSIS &&
+            if (!com.soreverse.mcp.core.SelfArtifactGuard.allowSelfAnalysis &&
                 NativeProbe.isOwnApk(local.absolutePath)
             ) {
                 selfForbidden("apk:$path")
@@ -388,12 +388,13 @@ internal fun EngineRuntime.analyzeApk(path: String, entryLimit: Int = 500): JSON
         )
     }
     if (bytes.size < 4 ||
-        bytes[0] != 0x50.toByte() || bytes[1] != 0x4b.toByte()
+        bytes[0] != 0x50.toByte() ||
+        bytes[1] != 0x4b.toByte()
     ) {
         return@guarded err("APK_INVALID", "Input is not a ZIP/APK file", "path", path)
     }
-    // 【魔改】ALLOW_SELF_ANALYSIS 放行时不拦
-    if (!com.soreverse.mcp.core.SelfArtifactGuard.ALLOW_SELF_ANALYSIS &&
+    // 【魔改】allowSelfAnalysis 放行时不拦
+    if (!com.soreverse.mcp.core.SelfArtifactGuard.allowSelfAnalysis &&
         (isSelfApkBytes(bytes) || (local.isFile && NativeProbe.isOwnApk(local.absolutePath)))
     ) {
         return@guarded selfForbidden("apk:$path")
@@ -500,8 +501,8 @@ internal fun EngineRuntime.openUrl(url: String, outputName: String = "", tempora
             }
         }.toByteArray()
     }
-    // 【魔改】ALLOW_SELF_ANALYSIS 放行时不拦
-    if (!com.soreverse.mcp.core.SelfArtifactGuard.ALLOW_SELF_ANALYSIS && isSelfApkBytes(bytes)) {
+    // 【魔改】allowSelfAnalysis 放行时不拦
+    if (!com.soreverse.mcp.core.SelfArtifactGuard.allowSelfAnalysis && isSelfApkBytes(bytes)) {
         return@guarded selfForbidden("url:$url")
     }
     if (bytes.size < 4 ||
@@ -764,8 +765,8 @@ internal fun EngineRuntime.openWorkspace(path: String, temporary: Boolean): Work
     // name this process can classify, and the work directory is read through
     // SAF documents rather than the filesystem. The bytes that are about to be
     // analyzed are therefore checked as well.
-    // 【魔改】ALLOW_SELF_ANALYSIS 放行时不拦
-    if (!com.soreverse.mcp.core.SelfArtifactGuard.ALLOW_SELF_ANALYSIS &&
+    // 【魔改】allowSelfAnalysis 放行时不拦
+    if (!com.soreverse.mcp.core.SelfArtifactGuard.allowSelfAnalysis &&
         containsPackageIdentifier(original)
     ) {
         throw IllegalArgumentException(
@@ -1162,4 +1163,3 @@ internal fun EngineRuntime.sourceSummary(dir: WorkDirectory, src: SoSource): Sou
 }
 
 internal fun EngineRuntime.sourceKey(src: SoSource): String = "${src.path}|${src.size}|${src.modified}"
-

@@ -29,11 +29,10 @@
 // handed to DynamicAnalysisService for an independent AI report.
 package com.soreverse.mcp.engine
 
-import com.soreverse.mcp.core.optNonBlankText
-
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.err
 import com.soreverse.mcp.core.ok
+import com.soreverse.mcp.core.optNonBlankText
 import com.soreverse.mcp.core.str
 import org.json.JSONArray
 import org.json.JSONObject

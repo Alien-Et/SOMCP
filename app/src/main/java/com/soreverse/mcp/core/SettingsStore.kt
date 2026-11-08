@@ -511,8 +511,6 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean("bootAutoStart", false)
         set(value) = prefs.edit().putBoolean("bootAutoStart", value).apply()
 
-
-
     // ---- APK MCP bridge ----
 
     /** Single bridge URL (legacy, maps to first entry in [apkMcpConfigs]). */

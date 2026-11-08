@@ -1,6 +1,5 @@
 package com.soreverse.mcp
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -315,10 +314,7 @@ internal fun SectionTitle(text: String, subtitle: String = "", modifier: Modifie
 
 /** 玻璃拟态卡片（无标题，纯内容容器） */
 @Composable
-internal fun ModernCardBare(
-    modifier: Modifier = Modifier,
-    content: @Composable ColumnScope.() -> Unit
-) {
+internal fun ModernCardBare(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(
         modifier
             .clip(RoundedCornerShape(24.dp))
@@ -427,13 +423,7 @@ internal fun StatusChip(text: String, color: Color, modifier: Modifier = Modifie
 
 /** 胶囊导航项（底部 dock 用） */
 @Composable
-internal fun CapsuleTab(
-    icon: ImageVector,
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
+internal fun CapsuleTab(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val accent = MaterialTheme.colorScheme.primary
     Column(
         modifier

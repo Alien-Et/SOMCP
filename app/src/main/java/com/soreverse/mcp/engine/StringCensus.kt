@@ -35,15 +35,16 @@ internal object StringCensus {
         if (seg.isEmpty()) return false
         // 纯数字段要在正则之前判：JAVA_PATH_SEG_RE 要求首字符是字母，
         // `virtual/data/user/0` 的末段 `0` 过不了那条正则。
-        if (seg.all { it.isDigit() }) return true        // 纯数字段（路径里的 "0"、版本位）
+        if (seg.all { it.isDigit() }) return true // 纯数字段（路径里的 "0"、版本位）
         if (!JAVA_PATH_SEG_RE.matches(seg)) return false
-        if (seg.none { it.isUpperCase() }) return true   // 全小写
-        if (seg.none { it.isLowerCase() }) return true   // 全大写
-        if (CAMEL_RE.matches(seg)) return true           // 多词驼峰 / PascalCase
+        if (seg.none { it.isUpperCase() }) return true // 全小写
+        if (seg.none { it.isLowerCase() }) return true // 全大写
+        if (CAMEL_RE.matches(seg)) return true // 多词驼峰 / PascalCase
         // 【修复·第四轮】单个 PascalCase 单词（`Object` / `Thread` / `Looper`）
         // 也要认：`CAMEL_RE` 的第二分支要求「至少两个大写词」，于是
         // `java/lang/Object` 这类 Java 类名片段整条过不了路径判定，被判成 base64。
-        return seg.length >= 2 && seg[0].isUpperCase() &&
+        return seg.length >= 2 &&
+            seg[0].isUpperCase() &&
             seg.drop(1).all { it.isLowerCase() || it.isDigit() }
     }
 
@@ -95,8 +96,7 @@ internal object StringCensus {
      * 对它们套 `base64_like` / `hex_like` 在语义上就是错的 —— 一次 `str_literal_classes`
      * 在 样本加固库2.so 上因为 `.dynstr` 报出 22 个 `base64_like`，全是函数名。
      */
-    private fun isSymbolTableSection(section: String?): Boolean =
-        section == ".dynstr" || section == ".strtab" || section == ".symtab"
+    private fun isSymbolTableSection(section: String?): Boolean = section == ".dynstr" || section == ".strtab" || section == ".symtab"
 
     /**
      * 【修复·第二轮】Itanium C++ 修饰名（mangled name）不是 base64。
@@ -122,7 +122,7 @@ internal object StringCensus {
         while (i < end) {
             var j = i
             while (j < end && value[j].isDigit()) j++
-            if (j == i) return false              // 长度字段缺失
+            if (j == i) return false // 长度字段缺失
             val len = value.substring(i, j).toIntOrNull() ?: return false
             if (len <= 0 || j + len > end) return false
             val part = value.substring(j, j + len)

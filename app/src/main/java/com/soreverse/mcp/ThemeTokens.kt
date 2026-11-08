@@ -223,14 +223,14 @@ internal object AppleColors {
 
 /** M3 标准深色配色 token（Google Material 3 dark） */
 internal object Glass {
-    val card = Color(0xFF2A2C33)        // surfaceVariant（M3 卡片）
-    val cardStrong = Color(0xFF36383E)  // surfaceContainerHigh（导航条）
-    val stroke = Color(0xFF3A3C41)      // outlineVariant（细描边）
+    val card = Color(0xFF2A2C33) // surfaceVariant（M3 卡片）
+    val cardStrong = Color(0xFF36383E) // surfaceContainerHigh（导航条）
+    val stroke = Color(0xFF3A3C41) // outlineVariant（细描边）
     val strokeStrong = Color(0xFF4A4D55)
-    val glow = Color(0xFF8AB4F8)        // M3 主色蓝
+    val glow = Color(0xFF8AB4F8) // M3 主色蓝
     val glowSoft = Color(0xFF8AB4F8)
-    val bg = Color(0xFF121318)          // M3 深色背景
-    val bgDeep = Color(0xFF0E0F13)      // 更深背景（日志面板）
+    val bg = Color(0xFF121318) // M3 深色背景
+    val bgDeep = Color(0xFF0E0F13) // 更深背景（日志面板）
 }
 
 internal fun appleLightColors() = appLightColors(AppPalette.blue, false)

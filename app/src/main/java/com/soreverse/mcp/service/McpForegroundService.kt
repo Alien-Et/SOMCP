@@ -200,7 +200,6 @@ class McpForegroundService : Service() {
         false
     }
 
-
     private fun updateWakeLock(enabled: Boolean) {
         if (!enabled) {
             wakeLock?.takeIf { it.isHeld }?.release()

@@ -406,12 +406,25 @@ internal object StringDecryptor {
             // 可打印率 0.12，纯粹是 CFI 编码，不是密文。
             .filter { section ->
                 val n = section.name
-                !(n.startsWith(".eh_frame") || n.startsWith(".rela.") || n.startsWith(".rel.") ||
-                    n.startsWith(".gnu.") || n.startsWith(".note") || n.startsWith(".ARM.") ||
-                    n.startsWith(".data.rel.ro") ||
-                    n == ".dynamic" || n == ".got" || n == ".got.plt" ||
-                    n == ".init_array" || n == ".fini_array" || n == ".preinit_array" ||
-                    n == ".dynsym" || n == ".symtab" || n == ".strtab" || n == ".comment")
+                !(
+                    n.startsWith(".eh_frame") ||
+                        n.startsWith(".rela.") ||
+                        n.startsWith(".rel.") ||
+                        n.startsWith(".gnu.") ||
+                        n.startsWith(".note") ||
+                        n.startsWith(".ARM.") ||
+                        n.startsWith(".data.rel.ro") ||
+                        n == ".dynamic" ||
+                        n == ".got" ||
+                        n == ".got.plt" ||
+                        n == ".init_array" ||
+                        n == ".fini_array" ||
+                        n == ".preinit_array" ||
+                        n == ".dynsym" ||
+                        n == ".symtab" ||
+                        n == ".strtab" ||
+                        n == ".comment"
+                    )
             }
             .sortedBy { it.name }
             .forEach { section ->

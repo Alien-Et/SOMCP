@@ -6,10 +6,8 @@
 package com.soreverse.mcp.core
 
 import android.util.Log
-import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.InputStreamReader
 
 /**
  * Root 执行通道。
@@ -89,13 +87,7 @@ object RootShell {
         return cachedSuPath
     }
 
-    data class ShellResult(
-        val exitCode: Int,
-        val stdout: String,
-        val stderr: String,
-        val timedOut: Boolean,
-        val ok: Boolean
-    )
+    data class ShellResult(val exitCode: Int, val stdout: String, val stderr: String, val timedOut: Boolean, val ok: Boolean)
 
     /**
      * 以 root 执行命令。
@@ -193,12 +185,15 @@ object RootShell {
             val timeout = if (timeoutMs > 0) timeoutMs else defaultTimeoutMs
             val timer = java.util.Timer("rootshell-read-watchdog", true)
             watchdog = timer
-            timer.schedule(object : java.util.TimerTask() {
-                override fun run() {
-                    timedOut = true
-                    runCatching { proc.destroyForcibly() }
-                }
-            }, timeout)
+            timer.schedule(
+                object : java.util.TimerTask() {
+                    override fun run() {
+                        timedOut = true
+                        runCatching { proc.destroyForcibly() }
+                    }
+                },
+                timeout
+            )
             val out = ByteArrayOutputStream()
             // stderr 必须抽干，否则 cat 写满 64KB pipe 缓冲后会阻塞
             val errBuf = StringBuilder()
@@ -215,7 +210,10 @@ object RootShell {
                         }
                     }
                 }
-            }, "rootshell-read-stderr").apply { isDaemon = true; start() }
+            }, "rootshell-read-stderr").apply {
+                isDaemon = true
+                start()
+            }
             process.inputStream.use { input ->
                 val buf = ByteArray(65536)
                 var total = 0L
@@ -293,7 +291,10 @@ object RootShell {
                         }
                     }
                 }
-            }, "rootshell-stream-stderr").apply { isDaemon = true; start() }
+            }, "rootshell-stream-stderr").apply {
+                isDaemon = true
+                start()
+            }
 
             val raw = process.inputStream
             object : java.io.FilterInputStream(raw) {
@@ -308,7 +309,11 @@ object RootShell {
 
                 override fun read(b: ByteArray, off: Int, len: Int): Int {
                     val n = super.read(b, off, len)
-                    if (n > 0) consumed += n else if (n < 0) verifyEof()
+                    if (n > 0) {
+                        consumed += n
+                    } else if (n < 0) {
+                        verifyEof()
+                    }
                     return n
                 }
 
@@ -335,7 +340,9 @@ object RootShell {
                 }
 
                 override fun close() {
-                    try { super.close() } finally {
+                    try {
+                        super.close()
+                    } finally {
                         runCatching { process.destroyForcibly() }
                     }
                 }
@@ -368,13 +375,7 @@ object RootShell {
         return r.stdout.trim() == "yes"
     }
 
-    data class DirEntry(
-        val name: String,
-        val path: String,
-        val isDirectory: Boolean,
-        val size: Long,
-        val modified: Long
-    )
+    data class DirEntry(val name: String, val path: String, val isDirectory: Boolean, val size: Long, val modified: Long)
 
     /**
      * 以 root 身份列目录（非递归）。
@@ -416,18 +417,13 @@ object RootShell {
     }
 
     /** 递归扫描目录，收集匹配后缀的文件。失败时静默跳过。*/
-    fun walkFiles(
-        dirPath: String,
-        suffixes: List<String>,
-        maxDepth: Int = 8,
-        onFile: (DirEntry) -> Unit
-    ) {
+    fun walkFiles(dirPath: String, suffixes: List<String>, maxDepth: Int = 8, onFile: (DirEntry) -> Unit) {
         if (maxDepth <= 0 || !isAvailable()) return
         // 【魔改】旧实现递归逐层 listFiles（每层一次 `su -c find|stat`），
         // 扫 /data/app、/storage/emulated/0 这类大目录会起几百个 su 进程，
         // 慢到 MCP 请求直接超时。改成一条 `find -maxdepth N` 拿全部路径，
         // 再一次性 stat 补元信息（最多 2 次 su）。
-        val nameFilter = suffixes.joinToString(" -o ") { "-iname '*${it}'" }
+        val nameFilter = suffixes.joinToString(" -o ") { "-iname '*$it'" }
             .let { if (suffixes.isEmpty()) "" else " \\( $it \\)" }
         val r = exec(
             "find ${shellQuote(dirPath)} -maxdepth $maxDepth -type f $nameFilter -print0 2>/dev/null | " +

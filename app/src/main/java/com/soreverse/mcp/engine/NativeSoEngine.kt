@@ -31,6 +31,7 @@ class NativeSoEngine(context: Context) {
     fun openUrl(url: String, outputName: String = "", temporary: Boolean = false): JSONObject = runtime.openUrl(url, outputName, temporary)
     fun listWorkspaces(): JSONObject = runtime.listWorkspaces()
     fun close(workspaceId: String): JSONObject = runtime.close(workspaceId)
+
     /**
      * Clear derived engine caches. Open workspaces / edit sessions are kept unless
      * [dropWorkspaces] is true — see EngineRuntime.clearCaches for why.

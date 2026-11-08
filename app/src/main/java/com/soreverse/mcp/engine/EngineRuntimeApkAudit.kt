@@ -39,11 +39,7 @@ private fun heapHeadroomBytes(): Long {
 }
 
 /** 把 root-only 的 APK 流式落到 App 私有缓存，返回临时文件（调用方负责删除）。 */
-private fun stageApkToTempFile(
-    context: android.content.Context,
-    path: String,
-    declaredSize: Long
-): File? {
+private fun stageApkToTempFile(context: android.content.Context, path: String, declaredSize: Long): File? {
     val dir = File(context.cacheDir, "apk-audit").apply { mkdirs() }
     val safeName = path.substringAfterLast('/').take(64).ifBlank { "apk" }
     val out = File(dir, "audit-${System.currentTimeMillis()}-$safeName")
@@ -134,8 +130,8 @@ internal fun EngineRuntime.loadApkAuditInput(path: String): Pair<ByteArray, JSON
     if (bytes.size < 4 || bytes[0] != 0x50.toByte() || bytes[1] != 0x4b.toByte()) {
         return ByteArray(0) to err("APK_INVALID", "Input is not a ZIP/APK file", "path", path)
     }
-    // 【魔改】ALLOW_SELF_ANALYSIS 放行时不拦
-    if (!SelfArtifactGuard.ALLOW_SELF_ANALYSIS &&
+    // 【魔改】allowSelfAnalysis 放行时不拦
+    if (!SelfArtifactGuard.allowSelfAnalysis &&
         (isSelfApkBytes(bytes) || (local.isFile && NativeProbe.isOwnApk(local.absolutePath)))
     ) {
         return ByteArray(0) to selfForbidden("apk:$path")

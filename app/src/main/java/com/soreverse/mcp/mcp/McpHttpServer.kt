@@ -22,7 +22,6 @@ import com.soreverse.mcp.BuildConfig
 import com.soreverse.mcp.core.ApkMcpBridge
 import com.soreverse.mcp.core.AppLog
 import com.soreverse.mcp.core.EngineProvider
-import com.soreverse.mcp.core.SelfArtifactGuard
 import com.soreverse.mcp.core.SettingsStore
 import com.soreverse.mcp.core.ToolStats
 import com.soreverse.mcp.core.bool
@@ -839,7 +838,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
             }
         } else if (false) {
             JSONObject().put("error", "APK MCP bridge removed")
-} else {
+        } else {
             JSONObject().put(
                 "ok",
                 false
@@ -895,8 +894,7 @@ class McpHttpServer(private val context: Context, private val port: Int, private
      * standard refusal and the workspace id is quarantined, which also refuses
      * every later call (read / xref / edit / build) that mentions it.
      */
-    private fun bridgedCall(name: String, args: JSONObject): JSONObject =
-        JSONObject().put("error", "APK MCP bridge removed")
+    private fun bridgedCall(name: String, args: JSONObject): JSONObject = JSONObject().put("error", "APK MCP bridge removed")
 
     private fun io.ktor.server.application.ApplicationCall.authorized(): Boolean {
         val settings = SettingsStore(context)

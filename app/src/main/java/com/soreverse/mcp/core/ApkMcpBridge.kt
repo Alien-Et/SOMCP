@@ -7,7 +7,6 @@
 //
 package com.soreverse.mcp.core
 
-import org.json.JSONArray
 import org.json.JSONObject
 
 class ApkMcpBridge(@Suppress("unused") private val settings: SettingsStore) {
@@ -44,8 +43,7 @@ class ApkMcpBridge(@Suppress("unused") private val settings: SettingsStore) {
     fun bridgedPrefix(): String = ""
     fun allPrefixes(): List<String> = emptyList()
     fun isBridgedTool(name: String): Boolean = false
-    fun callTool(name: String, args: JSONObject): JSONObject =
-        JSONObject().put("error", "APK MCP bridge removed")
+    fun callTool(name: String, args: JSONObject): JSONObject = JSONObject().put("error", "APK MCP bridge removed")
 
     fun startHealthMonitor() { /* no-op */ }
     fun stopHealthMonitor() { /* no-op */ }

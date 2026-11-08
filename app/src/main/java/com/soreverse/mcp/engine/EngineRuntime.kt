@@ -50,8 +50,7 @@ internal class EngineRuntime(internal val context: Context) {
      * 注意：这里必须直接读 `workspaces[id]`，不能再调 `touchWorkspace(id)`——
      * 同名重载会解析成它自己，形成无限递归，编译期不报错，运行时 StackOverflowError。
      */
-    internal fun touchWorkspace(id: String): Workspace? =
-        workspaces[id]?.also { it.lastAccessMillis = System.currentTimeMillis() }
+    internal fun touchWorkspace(id: String): Workspace? = workspaces[id]?.also { it.lastAccessMillis = System.currentTimeMillis() }
 
     /**
      * 【修复 B2】常驻 workspace 上限。以前只有 so_close 才会 remove，连续
