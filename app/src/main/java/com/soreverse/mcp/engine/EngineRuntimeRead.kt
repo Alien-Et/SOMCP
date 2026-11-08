@@ -803,30 +803,13 @@ internal fun EngineRuntime.outline(workspaceId: String, editSessionId: String, l
                     size.toInt()
                 }
             )
-            .put(
-                "basicBlocks",
-                JSONArray().put(
-                    JSONObject().put(
-                        "index",
-                        0
-                    ).put(
-                        "startAddr",
-                        hex(start)
-                    ).put(
-                        "endAddr",
-                        hex(start + size)
-                    ).put(
-                        "instructionCount",
-                        0
-                    ).put(
-                        "isEntry",
-                        true
-                    ).put(
-                        "isExit",
-                        true
-                    ).put("successors", JSONArray()).put("predecessors", JSONArray())
-                )
-            )
+            // 【修复】这里原来塞了一个「覆盖整个函数、instructionCount=0」的假基本块。
+            // 它与 analyze_cfg 的真实结果直接矛盾（同一函数 cfg 报 8 块），既不是数据、
+            // 也不是明确的「不可用」，调用方会把它当真块读。outline 是快速结构视图，
+            // 拿不到真实块时就该明说，而不是编一个出来。
+            .put("basicBlocks", JSONArray())
+            .put("basicBlocksAvailable", false)
+            .put("basicBlocksHint", "Real blocks are unavailable on this path; call analyze_cfg with the same locator.")
             .put("calledFunctions", JSONArray())
             .put("callers", JSONArray())
             .put("stringReferences", JSONArray())
@@ -1575,6 +1558,13 @@ internal fun EngineRuntime.pseudoDisasm(
 }
 
 internal fun EngineRuntime.cleanDisasmLines(text: String, limit: Int): List<String> = text.lineSequence()
+    // 【修复】内嵌 Rizin 的 ARM64 寄存器别名替换是**朴素子串替换**：`x29`→`fp`、`x30`→`lr`。
+    // 它会把立即数与地址里的同形子串一并改掉：`[sp, #0x30]` 渲染成 `[sp, 0lr]`，
+    // `0x29xx` 渲染成 `0fpxx`。实测字节 `FD 7B 03 A9`（= `stp x29, x30, [sp, #0x30]`）
+    // 被反汇编成 `stp fp, lr, [sp, 0lr]`，read_disasm 与 rizin_api 两个后端都一样。
+    // 按同一映射反向修回：被腐蚀的立即数只可能长成 `0lr…` / `0fp…`（`0x` 里的 `x` 被吃掉），
+    // 而这两串在合法 ARM64 文本里不可能出现，所以直接替换是安全的。
+    .map { it.replace("0lr", "0x30").replace("0fp", "0x29") }
     .map { it.trimEnd() }
     .filter { it.isNotBlank() }
     .map { line ->

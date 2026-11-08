@@ -70,25 +70,29 @@ internal object NativeProfile {
         }
         val desc = android.third
         result.put("found", true).put("descSize", desc.size)
-        if (desc.size >= 8) {
-            val sdk = u32(desc, 0, elf.littleEndian)
-            val ndkPacked = u32(desc, 4, elf.littleEndian)
-            result
-                .put("sdkVersion", sdk)
-                .put("ndkVersion", ndkPacked)
-                .put("ndkVersionHuman", ndkHuman(ndkPacked))
+        // 【修复】AOSP 的 .note.android.ident desc 布局是
+        //   { uint32 android_api_level; char ndk_version[64]; char ndk_build_number[64]; }
+        // 共 132 字节（实测 descsz = 0x84，正好 4 + 64 + 64）。旧实现把 offset 4 当
+        // 「打包整数」、把 offset 8 当 build number 字符串，于是：
+        //   - NDK 版本 "r21b" 的 ASCII（72 32 31 62）被读成 1647391346，再按位切片
+        //     "格式化"成现实中不存在的 49.196.12914；
+        //   - build number 从 offset 8 起取到 60 个 NUL，再接上真值 6352462。
+        if (desc.size >= 4) {
+            result.put("sdkVersion", u32(desc, 0, elf.littleEndian))
         }
-        if (desc.size > 8) {
-            result.put("buildNumber", String(desc, 8, desc.size - 8, Charsets.US_ASCII).trimEnd('\u0000'))
-        }
+        readFixedString(desc, 4, 64)?.let { result.put("ndkVersion", it) }
+        readFixedString(desc, 68, 64)?.let { result.put("buildNumber", it) }
         return result
     }
 
-    private fun ndkHuman(packed: Long): String {
-        val major = (packed shr 25) and 0x7fL
-        val minor = (packed shr 14) and 0x7ffL
-        val build = packed and 0x3fffL
-        return "$major.$minor.$build"
+    /** 读 desc 中 [offset] 起的定长 NUL 结尾 ASCII 字段；为空则返回 null（不下发该键）。 */
+    private fun readFixedString(desc: ByteArray, offset: Int, maxLen: Int): String? {
+        if (offset >= desc.size) return null
+        val end = minOf(desc.size, offset + maxLen)
+        val text = String(desc, offset, end - offset, Charsets.US_ASCII)
+            .substringBefore('\u0000')
+            .trim()
+        return text.ifEmpty { null }
     }
 
     // ── ndk_toolchain_fingerprint ──

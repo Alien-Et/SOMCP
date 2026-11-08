@@ -2,6 +2,20 @@
 
 # 更新日志
 
+## 1.0.29
+- **81 个工具全量实测（真实大样本：150 MB APK + 66 个 SO，含商用加固），修掉 6 个工具侧真 bug**。测试目标是一个真实 Flutter 应用（本文不点名），逐工具以真实参数调用并交叉验证结果。
+  - **`cache_clear` 会静默销毁所有工作区与编辑会话（高）**。`EngineRuntimeSources.clearCaches()` 里有一句无条件 `workspaces.clear()`，而该工具的 schema 只承诺清「扫描缓存 / 分页缓存」，文档还把 `WORKSPACE_NOT_FOUND` 归因于 LRU 淘汰。工作区持有已解析的 ELF 与编辑会话，**不是缓存**。最小复现：`so_open` → `analyze_elf` 正常 → `cache_clear` → `analyze_elf` 立刻 `WORKSPACE_NOT_FOUND`。修法：默认只清派生缓存，新增 `dropWorkspaces`（默认 `false`）显式要求才丢弃工作区；响应回传 `dropWorkspaces`，日志同时打印保留的工作区数。`EngineRuntime.clearCaches` / `NativeSoEngine.clearCaches` / 工具 schema 三处同步。
+  - **ARM64 反汇编的立即数与地址被寄存器别名替换腐蚀（高）**。内嵌 Rizin 的别名替换是**朴素子串替换**：`x29`→`fp`、`x30`→`lr`，于是立即数里的同形子串被一起改掉 —— `[sp, #0x30]` 渲染成 `[sp, 0lr]`、`0x29xx` 渲染成 `0fpxx`。字节级复核：`FD 7B 03 A9` 是 `stp x29, x30, [sp, #0x30]`，而 `read_disasm` 与 `rizin_api` 两个后端都输出 `stp fp, lr, [sp, 0lr]`。修法：在 `cleanDisasmLines` 里按同一映射反向修回（`0lr`→`0x30`、`0fp`→`0x29`；这两串在合法 ARM64 文本里不可能出现，替换安全）。实测修复后同一函数正确显示 `[sp, 0x30]`。
+  - **`edit_symbol` 的 `op=rename` 快捷方式不可用（中）**。schema 明确把 `op` 标为「shortcut, bypasses edits[]」，实现里却只有 `add` / `remove` 两个分支，`rename` 落进 `else` 被要求提供 `edits[]`，报 `INVALID_ARGUMENT: edits[] is required`。修法：补 `rename` 分支（`locator` = 旧符号、`name` = 新名字），实测等长改名预览成功、改更长名字时返回正确的业务错误 `SYMTAB_OVERFLOW`。
+  - **`analyze_outline` 编造基本块（中）**。它无条件塞一个「覆盖整个函数、`instructionCount: 0`」的假块，与 `analyze_cfg` 的真实结果直接矛盾（同一函数 cfg 报 8 个块），且看起来像真数据。修法：拿不到真实块时改为 `basicBlocks: []` + `basicBlocksAvailable: false` + `basicBlocksHint`（指向 `analyze_cfg`）。
+  - **`.note.android.ident` 结构解析错误（中）**。AOSP 布局是 `{ uint32 api_level; char ndk_version[64]; char ndk_build_number[64] }`（132 字节，与实测 `descsz=0x84` 吻合），旧实现把 `offset 4` 当打包整数、`offset 8` 当 build number 字符串 —— NDK 版本 `"r21b"` 的 ASCII（`72 32 31 62`）被读成 `1647391346` 并"格式化"成现实中不存在的 `49.196.12914`，build number 则变成 60 个 NUL 再接真值。修法：按真实布局读两个定长字符串，输出 `ndkVersion: "r21b"` / `buildNumber: "6352462"`（`ndkVersionHuman` 与死代码 `ndkHuman()` 一并移除）。
+  - **`patch_apply_verify` 的自检详情自相矛盾（低）**。`relocation_targets` 的 status 由布尔值决定，detail 却写死成「sets differ」；未编辑的镜像会给出 `status: preserved` + `detail: "reloc (offset,type) sets differ"`。修法：detail 按实际分支生成（`unchanged (N)` / `differ (N -> M)`）。
+- **同轮发现、本轮未改的 4 项**（已记录，待后续处理）：
+  - `obfusc_api` 在**非混淆**库上大面积误报：`workspace_overview` 明确 `ollvm: false`，`obfusc_api` 却报 `overall: "flattened"`、40 个函数里 33 个判为 `flattened`/`confidence: high`，而被判的全是 libc++ 模板实例（`money_get::__do_get`、`__sort`、`__cxa_demangle` …）自身的分支结构。判据（dispatcher fan-in ≥ 3 + 薄块比）对编译器生成的大 switch 无区分度，需要加入「dispatcher 需指向同一状态变量 / case 表」这类约束，或至少不要给 `high` 置信度。
+  - `analyze_functions` 在内嵌 Rizin 的函数 JSON 解析失败时**静默降级**为 LIEF 导出符号（响应里有 `warning`，但 `calls` 全为 0、与 `analyze_elf` 的 `analyzedFunctions` 语义混在一起）。
+  - 参数错误提示不点名缺失字段：`edit_asm` 把 `locator` 写进 `edits[]` 会被静默忽略，然后报 `Function or address '' could not be resolved`；`edit_symbol` 只报 `edits[] is required`。
+  - 多个工具的响应体没有上限：实测 `analysis_report` 1.7 MB、`workspace_export` 1.1 MB、`apk_analyze` 224 KB、`flutter_blutter(inspect)` 159 KB 内联返回；`app_config` 的 `toolResultMaxChars` 默认为 `0`（不限），客户端上下文有被撑爆的风险。
+
 ## 1.0.28
 - **订正 `FLUTTER_VERSION_NOT_SUPPORTED` 的文案：runner 不需要随 APK 分发**（`BlutterCoordinator.kt`、`docs/18`）。这个报错此前写着「a missing runner cannot be fetched onto the device at runtime — it has to ship inside the APK's native lib directory」，`missingRunner.source` 也写着「build-time only (must ship in lib/<abi>/ of the APK)」—— 那是**第三轮的结论，第四轮已经推翻**：Android 限制的是外部存储那类「其他方可能篡改」的位置，**应用自己的 `files/` 目录可以按绝对路径 `dlopen`**，`BlutterEngineStore` 与 `flutter_blutter(action=engines)` 就是为此实现的。文案与实际能力矛盾，会把调用方引向「重建 APK」这条不必要的路（实测：分析某 Flutter 应用时这个报错就是这么误导的）。
   - 现在报错直接给出**可执行的两步**：`missingRunner` 增加 `fileName`（`dartvm_<dartVersion>.so`）与 `installDirectory`（`<app files>/blutter-engines` 的绝对路径），`message` 说明放进去重试即可、无需重建 APK，并指出 runner 的两个来源（`blutter-engines` workflow / `tools/blutter-matrix/build-blutter-runners.sh`）；`nextActions` 也按这个顺序重写（原来是「rebuild SOMCP with a Blutter runner for Dart X」）。

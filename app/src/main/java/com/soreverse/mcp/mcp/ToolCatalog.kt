@@ -122,17 +122,26 @@ object ToolCatalog {
     private val cacheClear = object : ToolHandler {
         override val meta = ToolMeta(
             "cache_clear",
-            "清空引擎缓存（扫描缓存/分页缓存）",
-            "Clear engine caches (scan cache and pagination store). Use after swapping files with identical names or when stale results are suspected.",
+            "清空引擎缓存（扫描/分页缓存；默认保留已打开的工作区）",
+            "Clear derived engine caches (scan cache and pagination store). Open workspaces and their edit sessions are PRESERVED unless dropWorkspaces=true. Use after swapping files with identical names or when stale results are suspected.",
             "workspace",
             ToolClass.EXTRA
         ) {
-            objectSchema(props { })
+            objectSchema(
+                props {
+                    "dropWorkspaces" bool
+                        "Also discard every open workspace and its edit sessions (destructive; default false). " +
+                        "Without it this tool only drops derived caches."
+                }
+            )
         }
 
         override fun handle(ctx: ToolContext, args: JSONObject): JSONObject {
-            ctx.engine.clearCaches()
-            return ok(JSONObject().put("cleared", true))
+            val dropWorkspaces = args.optBoolean("dropWorkspaces", false)
+            ctx.engine.clearCaches(dropWorkspaces)
+            return ok(
+                JSONObject().put("cleared", true).put("dropWorkspaces", dropWorkspaces)
+            )
         }
     }
 
@@ -828,6 +837,20 @@ object ToolCatalog {
                     a.str("workspaceId"),
                     a.str("editSessionId"),
                     a.str("name")
+                )
+
+                // 【修复】schema 把 `op=rename` 标为「shortcut, bypasses edits[]」，
+                // 但实现里只有 add / remove 两个分支，rename 会落进 else 被要求给
+                // edits[] —— 文档承诺的快捷方式根本不可用。这里按语义补上：
+                // locator = 旧符号，name = 新名字。
+                "rename" -> e.editSymbol(
+                    a.str("workspaceId"),
+                    a.str("editSessionId"),
+                    a.str("locator"),
+                    JSONArray().put(
+                        JSONObject().put("op", "rename").put("newName", a.str("name"))
+                    ),
+                    a.bool("dryRun")
                 )
 
                 else -> e.editSymbol(

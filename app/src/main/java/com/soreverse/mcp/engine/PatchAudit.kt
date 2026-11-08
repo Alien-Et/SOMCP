@@ -80,7 +80,18 @@ internal object PatchAudit {
         )
         val origRelocs = originalElf.relocations.map { it.offset to it.type }.toSet()
         val editedRelocs = editedElf.relocations.map { it.offset to it.type }.toSet()
-        check("relocation_targets", origRelocs != editedRelocs, "reloc (offset,type) sets differ")
+        // 【修复】详情字符串原来写死成「sets differ」，而 `check` 的 status 是按布尔值
+        // 生成的 —— 未编辑时 status 是 preserved、detail 却说「differ」，自相矛盾
+        // （实测：无编辑的 patch_apply_verify 就长这样）。
+        check(
+            "relocation_targets",
+            origRelocs != editedRelocs,
+            if (origRelocs != editedRelocs) {
+                "reloc (offset,type) sets differ (${origRelocs.size} -> ${editedRelocs.size})"
+            } else {
+                "reloc (offset,type) set unchanged (${origRelocs.size})"
+            }
+        )
         val origWx = originalElf.sections.count { it.flags and 0x1L != 0L && it.flags and 0x4L != 0L }
         val editedWx = editedElf.sections.count { it.flags and 0x1L != 0L && it.flags and 0x4L != 0L }
         check("wx_section_delta", editedWx > origWx, "W+X sections $origWx -> $editedWx")

@@ -25,7 +25,7 @@ LIEF 重写与修复、补丁会话、构建导出、Flutter AOT 分析、JNI �
 | 项 | 值 |
 | --- | --- |
 | 包名 | `com.soreverse.mcp` |
-| 版本 | `1.0.28`（`versionCode` 29） |
+| 版本 | `1.0.29`（`versionCode` 30） |
 | 最低系统 | Android 8.0 / API 26 |
 | 目标 SDK | 36 |
 | 默认端口 | `8000` |
@@ -571,6 +571,22 @@ bash build-native-android.sh
   把既有构建产物导出成按需下载包（`curated-versions.json` 已覆盖
   `3.11.5 / 3.12.2 / 3.13.0 / 3.13.1` + 4 个 beta，正好覆盖本机实测遇到的版本）。
 - 体积账：一个 runner 约 12.6 MB；覆盖设备上全部 Flutter 应用只需 **2–3 个版本 ≈ 25–38 MB**。
+
+**第八轮：81 个工具全量实测，修掉 6 个工具侧 bug（2026-11-08）**
+
+用真实大样本（一个 150 MB 的 Flutter 应用，66 个 SO，含商用加固）逐个工具以真实参数调用并交叉验证，
+发现并修复 6 个工具侧缺陷：
+
+| 严重度 | 工具 | 问题 | 修法 |
+| --- | --- | --- | --- |
+| 高 | `cache_clear` | 无条件 `workspaces.clear()`，把**已解析的 ELF 与编辑会话**当缓存清掉 → 所有 `workspaceId`/`editSessionId` 静默失效（复现：`so_open` → `analyze_elf` 正常 → `cache_clear` → `analyze_elf` 报 `WORKSPACE_NOT_FOUND`）。文档还把这个错误归因成 LRU 淘汰 | 默认只清派生缓存；新增 `dropWorkspaces`（默认 `false`）显式要求才丢弃 |
+| 高 | `read_disasm` / `rizin_api` | ARM64 反汇编的**立即数与地址被寄存器别名替换腐蚀**：Rizin 用朴素子串替换把 `x29`→`fp`、`x30`→`lr`，于是 `[sp, #0x30]` 变成 `[sp, 0lr]`（字节级复核：`FD 7B 03 A9` = `stp x29, x30, [sp, #0x30]`） | `cleanDisasmLines()` 里按同一映射反向修回（`0lr`→`0x30`、`0fp`→`0x29`） |
+| 中 | `edit_symbol` | schema 把 `op=rename` 标为「shortcut, bypasses edits[]」，实现里只有 add/remove 两个分支 → 快捷方式不可用，报 `edits[] is required` | 补 `rename` 分支（`locator`=旧符号、`name`=新名字） |
+| 中 | `analyze_outline` | 编造一个「覆盖整函数、`instructionCount: 0`」的假基本块，与 `analyze_cfg` 的真实结果（同函数 8 个块）直接矛盾 | 改为 `basicBlocks: []` + `basicBlocksAvailable: false` + 提示 |
+| 中 | `android_ident_note` | `.note.android.ident` 结构读错：把 `offset 4` 当打包整数，于是 NDK 版本 `"r21b"` 被读成 `49.196.12914`，build number 前带 60 个 NUL | 按 AOSP 真实布局读两个定长字符串 → `ndkVersion: "r21b"` / `buildNumber: "6352462"` |
+| 低 | `patch_apply_verify` | 自检详情自相矛盾：`status: preserved` 配 `detail: "reloc (offset,type) sets differ"` | detail 按实际分支生成 |
+
+同轮记录 4 项待处理（未改）：`obfusc_api` 在非混淆库上大面积误报（非混淆库被判 33/40 函数「已扁平化」且 `confidence: high`，判中的全是 libc++ 模板自身的分支结构）、`analyze_functions` 在 Rizin JSON 解析失败时静默降级为 LIEF 符号、参数错误提示不点名缺失字段、多个工具响应体无上限（实测 `analysis_report` 1.7 MB / `workspace_export` 1.1 MB 内联返回，而 `toolResultMaxChars` 默认为 0）。
 
 **第七轮：用某 Flutter 应用做真实样本回归，`str_literal_classes` 三类新误报清零（2026-11-08）**
 

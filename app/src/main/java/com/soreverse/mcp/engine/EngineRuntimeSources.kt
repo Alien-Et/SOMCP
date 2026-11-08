@@ -660,19 +660,26 @@ internal fun EngineRuntime.close(workspaceId: String): JSONObject = guarded {
     ok(JSONObject().put("success", true))
 }
 
-internal fun EngineRuntime.clearCaches() {
+internal fun EngineRuntime.clearCaches(dropWorkspaces: Boolean = false) {
     emulatorSessions.values.forEach { session -> session.live?.let(unidbg::closeSession) }
     emulatorSessions.clear()
     frida.closeAll()
-    workspaces.clear()
+    // 【修复】工作区不是缓存：它持有已解析的 ELF 与编辑会话。旧实现无条件
+    // `workspaces.clear()`，于是 cache_clear（schema 只承诺清「扫描缓存/分页缓存」）
+    // 会静默作废所有 workspaceId / editSessionId。实测复现：so_open → analyze_elf 正常
+    // → cache_clear → analyze_elf 立刻 WORKSPACE_NOT_FOUND；调用方还会把它误当成
+    // LRU 淘汰（docs 里就是这么写的）。默认只清派生缓存，丢工作区必须显式要求。
+    if (dropWorkspaces) {
+        workspaces.clear()
+        workspaceBySourceKey.clear()
+    }
     sources = emptyList()
     sourceFingerprint = emptyList()
     sourceSummaryCache.clear()
-    workspaceBySourceKey.clear()
     pageStore.clear()
     searchCache.clear()
     workDir?.clearPersistentCache()
-    AppLog.i("Index caches cleared")
+    AppLog.i("Index caches cleared (dropWorkspaces=$dropWorkspaces, workspaces=${workspaces.size})")
 }
 
 internal fun EngineRuntime.openWorkspace(path: String, temporary: Boolean): Workspace {
